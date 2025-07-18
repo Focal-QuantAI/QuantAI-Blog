@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Focal QuantAI - Coming Soon</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Courier New', monospace;
+            background: #000;
+            color: #00ff00;
+            overflow-x: hidden;
+            min-height: 100vh;
+            position: relative;
+        }
+
+        .matrix-bg {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
+            opacity: 0.3;
+        }
+
+        .stock-ticker {
+            position: absolute;
+            top: 20px;
+            left: 0;
+            width: 100%;
+            overflow: hidden;
+            z-index: 1;
+        }
+
+        .ticker-content {
+            display: flex;
+            animation: scroll 30s linear infinite;
+            white-space: nowrap;
+        }
+
+        .ticker-item {
+            margin-right: 50px;
+            font-size: 14px;
+            color: #00ff00;
+            text-shadow: 0 0 10px #00ff00;
+        }
+
+        .ticker-item.negative {
+            color: #ff0040;
+            text-shadow: 0 0 10px #ff0040;
+        }
+
+        @keyframes scroll {
+            0% { transform: translateX(100%); }
+            100% { transform: translateX(-100%); }
+        }
+
+        .container {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+            position: relative;
+            z-index: 2;
+        }
+
+        .logo {
+            margin-bottom: 30px;
+            text-align: center;
+        }
+
+        .logo h1 {
+            font-size: 4rem;
+            font-weight: bold;
+            text-shadow: 0 0 20px #00ff00;
+            animation: glow 2s ease-in-out infinite alternate;
+            margin-bottom: 10px;
+        }
+
+        .logo .tagline {
+            font-size: 1.2rem;
+            color: #40ff40;
+            text-shadow: 0 0 10px #40ff40;
+            letter-spacing: 2px;
+        }
+
+        @keyframes glow {
+            from { text-shadow: 0 0 20px #00ff00; }
+            to { text-shadow: 0 0 30px #00ff00, 0 0 40px #00ff00; }
+        }
+
+        .loading-section {
+            width: 100%;
+            max-width: 600px;
+            margin: 40px 0;
+            text-align: center;
+        }
+
+        .loading-text {
+            font-size: 1.5rem;
+            margin-bottom: 20px;
+            color: #00ff00;
+            text-shadow: 0 0 10px #00ff00;
+        }
+
+        .loading-bar-container {
+            width: 100%;
+            height: 20px;
+            background: #001100;
+            border: 2px solid #00ff00;
+            border-radius: 10px;
+            overflow: hidden;
+            position: relative;
+            box-shadow: 0 0 20px #00ff00;
+        }
+
+        .loading-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #00ff00, #40ff40, #00ff00);
+            width: 0%;
+            transition: width 0.5s ease;
+            position: relative;
+            box-shadow: 0 0 20px #00ff00;
+        }
+
+        .loading-bar::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+            animation: shimmer 2s infinite;
+        }
+
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+
+        .progress-text {
+            margin-top: 15px;
+            font-size: 1.1rem;
+            color: #40ff40;
+            text-shadow: 0 0 8px #40ff40;
+        }
+
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 30px;
+            max-width: 800px;
+            margin: 40px 0;
+        }
+
+        .feature {
+            text-align: center;
+            padding: 20px;
+            border: 1px solid #00ff00;
+            border-radius: 10px;
+            background: rgba(0, 255, 0, 0.05);
+            backdrop-filter: blur(10px);
+            transition: all 0.3s ease;
+        }
+
+        .feature:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 30px rgba(0, 255, 0, 0.3);
+        }
+
+        .feature-icon {
+            width: 60px;
+            height: 60px;
+            margin: 0 auto 15px;
+        }
+
+        .feature h3 {
+            font-size: 1.2rem;
+            margin-bottom: 10px;
+            color: #00ff00;
+        }
+
+        .feature p {
+            color: #40ff40;
+            font-size: 0.9rem;
+        }
+
+        .footer {
+            margin-top: 50px;
+            text-align: center;
+            color: #40ff40;
+            font-size: 0.9rem;
+        }
+
+        .matrix-rain {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            overflow: hidden;
+        }
+
+        .matrix-column {
+            position: absolute;
+            top: -100%;
+            font-size: 20px;
+            color: #00ff00;
+            animation: matrix-fall linear infinite;
+            opacity: 0.7;
+        }
+
+        @keyframes matrix-fall {
+            to {
+                transform: translateY(100vh);
+            }
+        }
+
+        .chart-background {
+            position: fixed;
+            bottom: 0;
+            right: 0;
+            width: 50%;
+            height: 40%;
+            z-index: -1;
+            opacity: 0.1;
+        }
+
+        @media (max-width: 768px) {
+            .logo h1 {
+                font-size: 2.5rem;
+            }
+            
+            .logo .tagline {
+                font-size: 1rem;
+            }
+            
+            .features {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="matrix-bg">
+        <div class="matrix-rain" id="matrixRain"></div>
+    </div>
+
+    <div class="stock-ticker">
+        <div class="ticker-content">
+            <span class="ticker-item">AAPL: $185.42 (+2.34%)</span>
+            <span class="ticker-item">GOOGL: $142.78 (+1.87%)</span>
+            <span class="ticker-item negative">TSLA: $248.91 (-0.92%)</span>
+            <span class="ticker-item">MSFT: $378.45 (+1.23%)</span>
+            <span class="ticker-item">NVDA: $891.23 (+4.56%)</span>
+            <span class="ticker-item negative">META: $324.12 (-1.45%)</span>
+            <span class="ticker-item">AMZN: $145.67 (+0.89%)</span>
+            <span class="ticker-item">SPY: $448.92 (+0.67%)</span>
+            <span class="ticker-item">QQQ: $392.15 (+1.12%)</span>
+            <span class="ticker-item negative">VIX: $18.94 (-2.34%)</span>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="logo">
+            <h1>FOCAL QUANTAI</h1>
+            <p class="tagline">ALGORITHMIC TRADING & TRAINING</p>
+        </div>
+
+        <div class="loading-section">
+            <div class="loading-text">INITIALIZING QUANTUM ALGORITHMS...</div>
+            <div class="loading-bar-container">
+                <div class="loading-bar" id="loadingBar"></div>
+            </div>
+            <div class="progress-text" id="progressText">0%</div>
+        </div>
+
+        <div class="features">
+            <div class="feature">
+                <svg class="feature-icon" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M20 80L40 60L60 70L80 20" stroke="#00ff00" stroke-width="3" fill="none"/>
+                    <circle cx="20" cy="80" r="3" fill="#00ff00"/>
+                    <circle cx="40" cy="60" r="3" fill="#00ff00"/>
+                    <circle cx="60" cy="70" r="3" fill="#00ff00"/>
+                    <circle cx="80" cy="20" r="3" fill="#00ff00"/>
+                    <path d="M10 90L90 90L90 10" stroke="#00ff00" stroke-width="2" fill="none"/>
+                </svg>
+                <h3>AI-Powered Analytics</h3>
+                <p>Advanced machine learning algorithms for market prediction and risk assessment</p>
+            </div>
+
+            <div class="feature">
+                <svg class="feature-icon" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="10" y="10" width="80" height="80" stroke="#00ff00" stroke-width="2" fill="none"/>
+                    <path d="M30 30L70 30L70 70L30 70Z" stroke="#00ff00" stroke-width="2" fill="rgba(0,255,0,0.1)"/>
+                    <circle cx="50" cy="50" r="15" stroke="#00ff00" stroke-width="2" fill="none"/>
+                    <path d="M50 35L50 65M35 50L65 50" stroke="#00ff00" stroke-width="2"/>
+                </svg>
+                <h3>Quantum Trading</h3>
+                <p>Next-generation trading strategies powered by quantum computing principles</p>
+            </div>
+
+            <div class="feature">
+                <svg class="feature-icon" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M50 10L90 90L10 90Z" stroke="#00ff00" stroke-width="2" fill="none"/>
+                    <circle cx="50" cy="40" r="5" fill="#00ff00"/>
+                    <path d="M30 65L70 65" stroke="#00ff00" stroke-width="2"/>
+                    <path d="M35 75L65 75" stroke="#00ff00" stroke-width="2"/>
+                </svg>
+                <h3>Elite Training</h3>
+                <p>Comprehensive education programs for algorithmic trading mastery</p>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>© 2025 Focal QuantAI. Revolutionizing Financial Markets Through AI.</p>
+        </div>
+    </div>
+
+    <svg class="chart-background" viewBox="0 0 400 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M0 150L50 120L100 140L150 90L200 110L250 70L300 85L350 45L400 60" stroke="#00ff00" stroke-width="2" fill="none" opacity="0.3"/>
+        <path d="M0 180L50 160L100 170L150 130L200 145L250 115L300 125L350 95L400 105" stroke="#40ff40" stroke-width="1" fill="none" opacity="0.2"/>
+    </svg>
+
+    <script>
+        // Matrix rain effect
+        function createMatrixRain() {
+            const matrixRain = document.getElementById('matrixRain');
+            const characters = '01アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン';
+            
+            for (let i = 0; i < 20; i++) {
+                const column = document.createElement('div');
+                column.className = 'matrix-column';
+                column.style.left = Math.random() * 100 + '%';
+                column.style.animationDuration = (Math.random() * 3 + 2) + 's';
+                column.style.animationDelay = Math.random() * 2 + 's';
+                
+                let text = '';
+                for (let j = 0; j < 20; j++) {
+                    text += characters[Math.floor(Math.random() * characters.length)] + '<br>';
+                }
+                column.innerHTML = text;
+                
+                matrixRain.appendChild(column);
+            }
+        }
+
+        // Loading bar animation
+        function startLoading() {
+            const loadingBar = document.getElementById('loadingBar');
+            const progressText = document.getElementById('progressText');
+            let progress = 0;
+            
+            const loadingMessages = [
+                'INITIALIZING QUANTUM ALGORITHMS...',
+                'CONNECTING TO MARKET DATA...',
+                'CALIBRATING AI MODELS...',
+                'OPTIMIZING TRADING STRATEGIES...',
+                'SYNCHRONIZING NEURAL NETWORKS...',
+                'FINALIZING SYSTEM PARAMETERS...',
+                'READY FOR DEPLOYMENT...'
+            ];
+            
+            const interval = setInterval(() => {
+                progress += Math.random() * 15 + 5;
+                if (progress > 100) {
+                    progress = 100;
+                    clearInterval(interval);
+                    document.querySelector('.loading-text').textContent = 'SYSTEM READY - LAUNCHING SOON...';
+                }
+                
+                loadingBar.style.width = progress + '%';
+                progressText.textContent = Math.floor(progress) + '%';
+                
+                // Update loading message
+                const messageIndex = Math.floor(progress / 15);
+                if (messageIndex < loadingMessages.length) {
+                    document.querySelector('.loading-text').textContent = loadingMessages[messageIndex];
+                }
+            }, 2000);
+        }
+
+        // Initialize effects
+        createMatrixRain();
+        startLoading();
+
+        // Add random glitch effect
+        setInterval(() => {
+            const elements = document.querySelectorAll('.logo h1, .feature h3');
+            const randomElement = elements[Math.floor(Math.random() * elements.length)];
+            
+            randomElement.style.transform = 'translateX(' + (Math.random() - 0.5) * 4 + 'px)';
+            randomElement.style.filter = 'hue-rotate(' + Math.random() * 360 + 'deg)';
+            
+            setTimeout(() => {
+                randomElement.style.transform = 'translateX(0)';
+                randomElement.style.filter = 'none';
+            }, 100);
+        }, 3000);
+    </script>
+</body>
+</html>
