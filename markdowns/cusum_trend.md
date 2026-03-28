@@ -1,5 +1,7 @@
 # Deconstructing the CUSUM Trend Indicator: A Trader's Guide
 
+> **Original Script:** [View the CUSUM Trend Indicator on TradingView](https://www.tradingview.com/script/YOUR_SCRIPT_ID_HERE/) *(Replace with the actual script URL)*
+
 ## 🧠 The Core Concept
 At its heart, the CUSUM Trend script is a sophisticated trend detection system. Imagine you're a quality control manager on a factory assembly line. Your job is to spot when a machine starts making slightly defective products. One or two small errors might be random noise, but a consistent stream of small errors indicates a real problem. You'd use a system to *cumulatively sum* these deviations, and once that sum hits a critical level, you sound the alarm.
 
@@ -29,6 +31,13 @@ No indicator is a holy grail. Here’s a balanced look at the CUSUM Trend's stre
 ### Cons:
 *   **Vulnerable to Sideways Markets:** Like most trend-following systems, its main weakness is choppy, range-bound markets. During these periods, it can generate a series of false "Buy" and "Sell" signals (known as whipsaws) before a real trend emerges.
 *   **Parameter Sensitivity:** The indicator's effectiveness is tied to the `Sensitivity` setting. A "Fast" setting might work wonders on a 15-minute chart for one asset but produce too much noise on a daily chart for another. Finding the right setting requires testing and observation.
+
+## 📜 Source Code
+
+```{raw} html
+<!-- Replace the URL below with your actual GitHub Gist script link -->
+<script src="https://gist.github.com/YOUR_GITHUB_USERNAME/YOUR_GIST_ID.js"></script>
+```
 
 ## 💻 Code Quality & Best Practices
 From a developer's standpoint, this script is well-crafted, but there's always room for polish.

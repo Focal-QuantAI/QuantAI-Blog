@@ -23,12 +23,12 @@ project:
     
     
 site:
-  template: jupyter
+  template: book-theme
   # options:
   #   favicon: favicon.ico
   #   logo: site_logo.png
   parts:
-    primary_sidebar_footer: primary-sidebar-footer.md
+    primary_sidebar_footer: "parts/primary-sidebar-footer.md"
   # nav:
   #   - title: Internal page
   #     url: /website-metadata
