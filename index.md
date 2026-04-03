@@ -1,4 +1,1 @@
 # Quant ShastrAI
-
-**Action:**
-Sample
