@@ -19,6 +19,9 @@ project:
         
 site:
   template: book-theme
+  html:
+    analytics:
+      google_analytics_id: G-16031NFVZR
   # options:
   #   favicon: favicon.ico
   #   logo: site_logo.png
