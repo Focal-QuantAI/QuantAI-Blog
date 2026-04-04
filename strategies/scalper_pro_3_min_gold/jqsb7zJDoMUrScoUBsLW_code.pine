@@ -1,0 +1,95 @@
+//@version=5
+indicator("Scalper Pro 3 Min Gold", overlay=true, max_boxes_count=500, max_labels_count=500, max_lines_count=500)
+
+// Settings
+targetMult = input.float(2.0, title="Target Multiplier (Risk:Reward)")
+boxLength = input.int(5, title="Drawing Box Length (Bars)")
+pivotLength = input.int(3, title="Structure Pivot Length")
+
+// Consolidation Filter
+grpCons = "Consolidation Filter"
+useConsolidation = input.bool(true, title="Require Consolidation Before Breakout", group=grpCons)
+consLength = input.int(10, title="Consolidation Length (Bars)", group=grpCons)
+atrMult = input.float(3.0, title="Max Range (ATR Multiplier)", group=grpCons, tooltip="Lower value means tighter consolidation required")
+
+// Cooldown Filter
+grpCool = "Cooldown Filter"
+useCooldown = input.bool(true, title="Enable Cooldown Between Trades", group=grpCool)
+cooldownBars = input.int(30, title="Cooldown Length (Bars)", group=grpCool, tooltip="Number of bars to wait after an entry before showing a new signal")
+
+// Structure Tracking
+var float lastPivotHigh = na
+var float lastPivotLow = na
+var int lastTradeBar = na
+
+ph = ta.pivothigh(high, pivotLength, pivotLength)
+pl = ta.pivotlow(low, pivotLength, pivotLength)
+
+if not na(ph)
+    lastPivotHigh := ph
+
+if not na(pl)
+    lastPivotLow := pl
+
+// Consolidation Calculation
+pastHigh = ta.highest(high[1], consLength)
+pastLow = ta.lowest(low[1], consLength)
+zoneRange = pastHigh - pastLow
+currentAtr = ta.atr(14)
+
+isConsolidating = useConsolidation ? (zoneRange <= (currentAtr * atrMult)) : true
+
+// Cooldown Calculation
+canEnter = useCooldown ? (na(lastTradeBar) or (bar_index - lastTradeBar >= cooldownBars)) : true
+
+// Breakout Logic
+isBullishCandle = close > open
+isBearishCandle = close < open
+
+// Long Condition: Price closes above the last pivot high, making a higher low, exiting a tight zone, and cooldown has passed.
+bullishBreakout = isBullishCandle and ta.crossover(close, lastPivotHigh) and low > lastPivotLow and isConsolidating and canEnter
+
+// Short Condition: Price closes below the last pivot low, making a lower high, exiting a tight zone, and cooldown has passed.
+bearishBreakout = isBearishCandle and ta.crossunder(close, lastPivotLow) and high < lastPivotHigh and isConsolidating and canEnter
+
+// Draw Long Setups
+if bullishBreakout
+    float entryPrice = close
+    float stopPrice = lastPivotLow
+    float risk = entryPrice - stopPrice
+    float targetPrice = entryPrice + (risk * targetMult)
+
+    if risk > 0
+        lastTradeBar := bar_index
+        
+        box.new(left=bar_index, top=entryPrice, right=bar_index + boxLength, bottom=stopPrice, border_color=color.new(color.red, 50), bgcolor=color.new(color.red, 80))
+        box.new(left=bar_index, top=targetPrice, right=bar_index + boxLength, bottom=entryPrice, border_color=color.new(color.teal, 50), bgcolor=color.new(color.teal, 80))
+
+        label.new(x=bar_index + boxLength, y=entryPrice, text="ENTRY", style=label.style_label_left, color=color.new(color.blue, 20), textcolor=color.white, size=size.small)
+        label.new(x=bar_index + boxLength, y=stopPrice, text="STOP LOSS", style=label.style_label_lower_left, color=color.new(color.red, 20), textcolor=color.white, size=size.small)
+        label.new(x=bar_index + boxLength, y=targetPrice, text="TARGET", style=label.style_label_upper_left, color=color.new(color.teal, 20), textcolor=color.white, size=size.small)
+
+        line.new(x1=bar_index, y1=entryPrice, x2=bar_index + boxLength, y2=entryPrice, color=color.blue, style=line.style_dotted)
+        line.new(x1=bar_index, y1=stopPrice, x2=bar_index + boxLength, y2=stopPrice, color=color.red, style=line.style_solid)
+        line.new(x1=bar_index, y1=targetPrice, x2=bar_index + boxLength, y2=targetPrice, color=color.teal, style=line.style_solid)
+
+// Draw Short Setups
+if bearishBreakout
+    float entryPrice = close
+    float stopPrice = lastPivotHigh
+    float risk = stopPrice - entryPrice
+    float targetPrice = entryPrice - (risk * targetMult)
+
+    if risk > 0
+        lastTradeBar := bar_index
+        
+        box.new(left=bar_index, top=stopPrice, right=bar_index + boxLength, bottom=entryPrice, border_color=color.new(color.red, 50), bgcolor=color.new(color.red, 80))
+        box.new(left=bar_index, top=entryPrice, right=bar_index + boxLength, bottom=targetPrice, border_color=color.new(color.teal, 50), bgcolor=color.new(color.teal, 80))
+
+        label.new(x=bar_index + boxLength, y=entryPrice, text="ENTRY", style=label.style_label_left, color=color.new(color.blue, 20), textcolor=color.white, size=size.small)
+        label.new(x=bar_index + boxLength, y=stopPrice, text="STOP LOSS", style=label.style_label_upper_left, color=color.new(color.red, 20), textcolor=color.white, size=size.small)
+        label.new(x=bar_index + boxLength, y=targetPrice, text="TARGET", style=label.style_label_lower_left, color=color.new(color.teal, 20), textcolor=color.white, size=size.small)
+
+        line.new(x1=bar_index, y1=entryPrice, x2=bar_index + boxLength, y2=entryPrice, color=color.blue, style=line.style_dotted)
+        line.new(x1=bar_index, y1=stopPrice, x2=bar_index + boxLength, y2=stopPrice, color=color.red, style=line.style_solid)
+        line.new(x1=bar_index, y1=targetPrice, x2=bar_index + boxLength, y2=targetPrice, color=color.teal, style=line.style_solid)
