@@ -40,6 +40,8 @@ jobs:
         run: npm install -g jupyter-book
       - name: Prep TOC and other metadata
         run: jupyter-book init --write-toc
+      - name: Add In Page Parts
+        run: echo "> `Quant ShastrAI`  <br>  Developed by <br> Focal QuantAI Pvt Ltd" > ./parts/primary-sidebar-footer.md
       - name: Build HTML Assets
         run: jupyter-book build --html
       - name: Upload artifact
