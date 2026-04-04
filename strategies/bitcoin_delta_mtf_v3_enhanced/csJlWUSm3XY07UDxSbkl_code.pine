@@ -1,0 +1,1051 @@
+//@version=5
+indicator("BTC Delta MTF v3 — Enhanced", shorttitle="Delta MTF v3", overlay=true, max_boxes_count=50, max_lines_count=50, max_labels_count=50)
+
+// ╔══════════════════════════════════════════════════════════╗
+// ║   BTC Delta MTF v3 — All 8 Upgrades                    ║
+// ║   1. True Intrabar CVD (all sub-candles aggregated)     ║
+// ║   2. Candle Phase % + Time Pressure                     ║
+// ║   3. Delta Exhaustion Score (flip tracking)             ║
+// ║   4. Absorption Detection (big vol + flat delta)        ║
+// ║   5. Intrabar Momentum Slope (accel / decel)            ║
+// ║   6. Dynamic POC from intrabar volume                   ║
+// ║   7. Composite Confidence % (0-100)                     ║
+// ║   8. Rich alert messages (price, delta, phase, conf)    ║
+// ╚══════════════════════════════════════════════════════════╝
+
+// ======================================================
+// INPUTS
+// ======================================================
+grpTF    = "Timeframes"
+tf_high  = input.timeframe("5",  "High TF (Main)",          group=grpTF)
+tf_low   = input.timeframe("1",  "Low TF (Secondary)",      group=grpTF)
+tf_trend = input.timeframe("60", "Trend TF (Filter)",       group=grpTF)
+useTrend = input.bool(true,      "Use trend as multiplier", group=grpTF)
+
+grpW  = "Delta Weights"
+wHigh = input.int(65, "Weight High TF", group=grpW, minval=0, maxval=100, step=5)
+wLow  = input.int(35, "Weight Low TF",  group=grpW, minval=0, maxval=100, step=5)
+
+grp3      = "Signal"
+sigThresh = input.int(40,    "Signal threshold pct of weight", group=grp3, minval=20, maxval=80,   step=5)
+revThresh = input.float(0.1, "Reversal threshold pct",         group=grp3, minval=0.02, maxval=2.0, step=0.05)
+
+grpRev       = "Reversal Weights"
+wRevProx     = input.int(35, "Proximity to open pct",    group=grpRev, minval=0, maxval=100, step=5)
+wRevConflict = input.int(25, "Delta 1m confirmation pct", group=grpRev, minval=0, maxval=100, step=5)
+wRevDV       = input.int(20, "DV Flow alignment pct",    group=grpRev, minval=0, maxval=100, step=5)
+wRevHidden   = input.int(20, "Hidden Signal pct",        group=grpRev, minval=0, maxval=100, step=5)
+
+grpNew           = "Enhanced Features"
+absorbThreshMult = input.float(1.3,  "Absorption: Vol multiplier threshold", group=grpNew, minval=1.0, maxval=5.0,  step=0.1,  tooltip="Lower = fires more often. 1.1 = very sensitive, 2.0 = rare.")
+absorbDeltaPct   = input.float(0.25, "Absorption: Max delta/vol ratio",      group=grpNew, minval=0.01, maxval=0.5,  step=0.01, tooltip="Higher = more lenient. 0.25 = moderate, 0.45 = very sensitive.")
+absorbSmaLen     = input.int(20,     "Absorption: Volume SMA length",        group=grpNew, minval=5,    maxval=50,   step=5,    tooltip="Bars used to calculate average volume. Lower = more responsive, more signals.")
+slopeLen         = input.int(3, "Slope: Sub-candle lookback", group=grpNew, minval=2, maxval=5, step=1)
+slopeMinChg      = input.float(0.0, "Slope: Min delta change for ACCEL/DECEL", group=grpNew, minval=0.0, maxval=200.0, step=5.0, tooltip="0 = any change triggers. Raise to filter noise on low-vol bars.")
+exhaustFlips     = input.int(3,     "Exhaustion: Min delta flips",          group=grpNew, minval=2, maxval=6, step=1)
+showPOCLine      = input.bool(true,  "Show POC level on chart",             group=grpNew)
+showVWAP         = input.bool(true,  "Show daily VWAP on chart",            group=grpNew)
+vwapAnchor       = input.string("UTC midnight", "VWAP anchor",              group=grpNew, options=["UTC midnight", "Rolling 24h"], tooltip="UTC midnight = resets at 00:00 UTC each day. Rolling 24h = always last 24 hours of bars.")
+showPhaseBar     = input.bool(true,  "Show candle phase label on chart",    group=grpNew)
+timePressureMin  = input.int(80,     "Time pressure threshold pct",         group=grpNew, minval=50, maxval=95, step=5,  tooltip="% of candle completed before NEXT CANDLE signal goes LIVE. 80 = last 1 min on 5m, 60 = last 2 min.")
+
+grp5        = "Table"
+tablePos    = input.string("top_right",    "Main table position",      group=grp5,
+              options=["top_right","top_left","bottom_right","bottom_left","top_center","bottom_center"])
+biasTblPos  = input.string("bottom_right", "Bias table position",      group=grp5,
+              options=["top_right","top_left","bottom_right","bottom_left","top_center","bottom_center"])
+
+// ======================================================
+// CORE DELTA FUNCTION
+// lookahead_on = intentional repainting for scalping
+// ======================================================
+f_delta(_tf) =>
+    o = request.security(syminfo.tickerid, _tf, open,   lookahead=barmerge.lookahead_on)
+    c = request.security(syminfo.tickerid, _tf, close,  lookahead=barmerge.lookahead_on)
+    v = request.security(syminfo.tickerid, _tf, volume, lookahead=barmerge.lookahead_on)
+    float d = 0.0
+    if c > o
+        d := v
+    else if c < o
+        d := -v
+    else
+        d := c > c[1] ? v : c < c[1] ? -v : 0.0
+    d
+
+// ======================================================
+// HIGH TF DELTA
+// ======================================================
+deltaH = f_delta(tf_high)
+
+// ======================================================
+// INTRABAR DATA via security_lower_tf
+// ======================================================
+float[] _o_arr   = request.security_lower_tf(syminfo.tickerid, tf_low, open)
+float[] _c_arr   = request.security_lower_tf(syminfo.tickerid, tf_low, close)
+float[] _v_arr   = request.security_lower_tf(syminfo.tickerid, tf_low, volume)
+float[] _h_arr   = request.security_lower_tf(syminfo.tickerid, tf_low, high)
+float[] _l_arr   = request.security_lower_tf(syminfo.tickerid, tf_low, low)
+int     _arr_size = array.size(_c_arr)
+
+// Last sub-candle delta (legacy, used in signal logic)
+float _oL    = _arr_size > 0 ? array.last(_o_arr) : na
+float _cL    = _arr_size > 0 ? array.last(_c_arr) : na
+float _vL    = _arr_size > 0 ? array.last(_v_arr) : na
+float deltaL = not na(_cL) ? (_cL > _oL ? _vL : _cL < _oL ? -_vL : 0.0) : 0.0
+
+// ======================================================
+// UPGRADE 1: TRUE INTRABAR CVD
+// Aggregates ALL sub-candles with per-bar DV split
+// Old code only used last sub-candle — this uses all of them
+// ======================================================
+float ibCVD_buy   = 0.0
+float ibCVD_sell  = 0.0
+float ibVol_total = 0.0
+
+if _arr_size > 0
+    for _i = 0 to _arr_size - 1
+        float _io  = array.get(_o_arr, _i)
+        float _ic  = array.get(_c_arr, _i)
+        float _iv  = array.get(_v_arr, _i)
+        float _ih  = array.get(_h_arr, _i)
+        float _il  = array.get(_l_arr, _i)
+        float _sp  = _ih - _il
+        float _sBuy  = _sp > 0 ? _iv * (_ic - _il) / _sp : _iv * 0.5
+        float _sSell = _sp > 0 ? _iv * (_ih - _ic) / _sp : _iv * 0.5
+        ibCVD_buy   += _sBuy
+        ibCVD_sell  += _sSell
+        ibVol_total += _iv
+
+float ibCVD_total = ibCVD_buy - ibCVD_sell
+float ibCVD_ratio = (ibCVD_buy + ibCVD_sell) > 0 ? ibCVD_buy / (ibCVD_buy + ibCVD_sell) : 0.5
+// Normalized: +1.0 = 100% buy pressure, -1.0 = 100% sell pressure
+float ibCVD_norm  = ibVol_total > 0 ? ibCVD_total / ibVol_total : 0.0
+
+// ======================================================
+// UPGRADE 2: CANDLE PHASE % + TIME PRESSURE
+// Estimates how far through the current candle we are
+// using sub-candle count vs expected count
+// ======================================================
+int   _tf_high_secs  = timeframe.in_seconds(tf_high)
+int   _tf_low_secs   = timeframe.in_seconds(tf_low)
+int   _expectedSubs  = math.max(1, _tf_high_secs / math.max(1, _tf_low_secs))
+float candlePhase    = _arr_size > 0 ? math.min(1.0, _arr_size / _expectedSubs) : 0.0
+int   candlePhasePct = math.round(candlePhase * 100)
+bool  timePressure   = candlePhasePct >= timePressureMin
+
+// ======================================================
+// UPGRADE 3: DELTA EXHAUSTION — HYBRID
+// Mode A (intrabar): sub-candle array when _sdSize >= 3
+// Mode B (rolling):  last 6 closed candles as fallback
+// Auto-switches — works on 1m free plan and any TF
+// ======================================================
+
+// Build sub-candle delta array
+float[] _subDeltaArr = array.new_float(0)
+if _arr_size > 0
+    for _i = 0 to _arr_size - 1
+        float _io2 = array.get(_o_arr, _i)
+        float _ic2 = array.get(_c_arr, _i)
+        float _iv2 = array.get(_v_arr, _i)
+        float _sd  = _ic2 > _io2 ? _iv2 : _ic2 < _io2 ? -_iv2 : 0.0
+        array.push(_subDeltaArr, _sd)
+
+int _sdSize = array.size(_subDeltaArr)
+
+// Rolling closed-candle delta buffer (fallback for 1m / low sub-candle count)
+float _chartDelta = close > open ? volume : close < open ? -volume : 0.0
+var float[] _rollDelta = array.new_float(0)
+if barstate.isconfirmed
+    array.push(_rollDelta, _chartDelta)
+    if array.size(_rollDelta) > 6
+        array.shift(_rollDelta)
+
+// Shared flip + magnitude helper function
+f_countFlips(float[] _arr) =>
+    int   _fc  = 0
+    float _ls  = 0.0
+    bool  _md  = false
+    int   _len = array.size(_arr)
+    if _len >= 2
+        for _i = 0 to _len - 1
+            float _v2 = array.get(_arr, _i)
+            float _s2 = _v2 > 0 ? 1.0 : _v2 < 0 ? -1.0 : 0.0
+            if _ls != 0.0 and _s2 != 0.0 and _s2 != _ls
+                _fc += 1
+            if _s2 != 0.0
+                _ls := _s2
+        float _l1 = math.abs(array.get(_arr, _len - 1))
+        float _l2 = math.abs(array.get(_arr, _len - 2))
+        _md := _l1 < _l2 * 0.7
+    [_fc, _md]
+
+// Pick mode based on available sub-candles
+bool _useIntrabar = _sdSize >= 3
+[_fcA, _mdA] = f_countFlips(_subDeltaArr)
+[_fcB, _mdB] = f_countFlips(_rollDelta)
+
+int  _flipCount   = _useIntrabar ? _fcA : _fcB
+bool _magnDecline = _useIntrabar ? _mdA : _mdB
+
+bool deltaExhausted = _flipCount >= exhaustFlips or (_magnDecline and _flipCount >= 2)
+bool deltaExhBull   = deltaExhausted and ibCVD_total > 0
+bool deltaExhBear   = deltaExhausted and ibCVD_total < 0
+
+// ======================================================
+// UPGRADE 4: ABSORPTION DETECTION
+// High volume + flat delta = smart money absorbing retail
+// Distinguishes accumulation vs distribution by price vs open
+// ======================================================
+float openH       = request.security(syminfo.tickerid, tf_high, open,   lookahead=barmerge.lookahead_on)
+float _c5         = request.security(syminfo.tickerid, tf_high, close,  lookahead=barmerge.lookahead_on)
+float _ibVolAvg   = ta.sma(ibVol_total, absorbSmaLen)
+float _ibVolRat   = _ibVolAvg > 0 ? ibVol_total / _ibVolAvg : 1.0
+float _ibDeltaRat = ibVol_total > 0 ? math.abs(ibCVD_total) / ibVol_total : 1.0
+bool  absorbed    = _ibVolRat >= absorbThreshMult and _ibDeltaRat < absorbDeltaPct
+// Price held below open despite buying = accumulation (smart buying absorbed selling)
+bool  absorbAccum = absorbed and _c5 <= openH
+// Price held at/above open despite selling = distribution (smart selling absorbed buying)
+bool  absorbDist  = absorbed and _c5 >= openH
+
+// ======================================================
+// UPGRADE 5: INTRABAR MOMENTUM SLOPE
+// Linear slope of last N sub-candle deltas
+// Tells you if momentum is building or fading
+// ======================================================
+float ibMomSlope = 0.0
+bool  ibMomAccel = false
+bool  ibMomDecel = false
+
+if _sdSize >= slopeLen
+    float _newest  = array.get(_subDeltaArr, _sdSize - 1)
+    float _oldest  = array.get(_subDeltaArr, math.max(0, _sdSize - slopeLen))
+    ibMomSlope    := _newest - _oldest
+    ibMomAccel    := ibMomSlope >  slopeMinChg and ibCVD_total > 0
+    ibMomDecel    := (ibMomSlope < -slopeMinChg and ibCVD_total > 0) or (ibMomSlope > slopeMinChg and ibCVD_total < 0)
+
+string slopeTxt = ibMomAccel ? "ACCEL" : ibMomDecel ? "DECEL" : ibMomSlope > 0 ? "UP" : ibMomSlope < 0 ? "DN" : "FLAT"
+color  slopeCol = ibMomAccel ? color.lime : ibMomDecel ? color.orange : color.gray
+
+// ======================================================
+// UPGRADE 6: INTRABAR POC (Point of Control)
+// Sub-candle with highest volume = price magnet
+// ======================================================
+float pocPrice = na
+float pocVol2  = 0.0
+if _arr_size > 0
+    for _i = 0 to _arr_size - 1
+        float _iv3 = array.get(_v_arr, _i)
+        if _iv3 > pocVol2
+            pocVol2  := _iv3
+            float _ih3 = array.get(_h_arr, _i)
+            float _il3 = array.get(_l_arr, _i)
+            pocPrice  := (_ih3 + _il3) / 2.0
+
+float pocDist     = not na(pocPrice) ? close - pocPrice : na
+string pocDistTxt = not na(pocDist) ? (pocDist >= 0 ? "+" : "") + str.tostring(pocDist, "#.0") : "n/a"
+color  pocDistCol = not na(pocDist) ? (pocDist > 0 ? color.lime : color.red) : color.gray
+
+// Rolling POC — 5-bar average of POC prices
+// Smoothed VPOC: shows where volume concentrated over last 25 min (on 5m)
+var float[] _pocHistory = array.new_float(0)
+if not na(pocPrice) and barstate.isconfirmed
+    array.push(_pocHistory, pocPrice)
+    if array.size(_pocHistory) > 5
+        array.shift(_pocHistory)
+
+float rollingPOC = na
+if array.size(_pocHistory) >= 2
+    float _sum = 0.0
+    int   _len = array.size(_pocHistory)
+    for _pi = 0 to _len - 1
+        _sum += array.get(_pocHistory, _pi)
+    rollingPOC := _sum / _len
+
+// Current POC line — yellow dashed (intrabar, precise)
+var line pocLine = na
+if showPOCLine and not na(pocPrice) and barstate.islast
+    if not na(pocLine)
+        line.delete(pocLine)
+    pocLine := line.new(x1=bar_index - 5, y1=pocPrice, x2=bar_index, y2=pocPrice, extend=extend.right, color=color.new(color.yellow, 20), width=2, style=line.style_dashed)
+
+// Rolling POC line — orange solid (5-bar smoothed context)
+var line rollingPocLine = na
+if showPOCLine and not na(rollingPOC) and barstate.islast
+    if not na(rollingPocLine)
+        line.delete(rollingPocLine)
+    rollingPocLine := line.new(x1=bar_index - 10, y1=rollingPOC, x2=bar_index, y2=rollingPOC, extend=extend.right, color=color.new(color.orange, 30), width=2, style=line.style_solid)
+
+// ======================================================
+// SESSION VWAP (daily anchor or rolling 24h)
+// Real VWAP that institutional traders use — resets at UTC midnight
+// or rolls over 24h depending on setting
+// ======================================================
+var float _vwapCumTV  = 0.0
+var float _vwapCumVol = 0.0
+var int   _vwapDay    = -1
+
+int  _curDay = dayofmonth(time, "UTC")
+bool _newDay  = _curDay != _vwapDay
+
+// Rolling 24h: count bars in 24h
+int   _tf_mins2   = math.max(1, timeframe.in_seconds() / 60)
+int   _barsIn24h  = math.round(1440 / _tf_mins2)
+
+if vwapAnchor == "UTC midnight"
+    if _newDay
+        _vwapCumTV  := 0.0
+        _vwapCumVol := 0.0
+        _vwapDay    := _curDay
+    float _tp2 = (high + low + close) / 3.0
+    _vwapCumTV  += _tp2 * volume
+    _vwapCumVol += volume
+else
+    // Rolling 24h — use ta.sma weighted by volume
+    float _tp2 = (high + low + close) / 3.0
+    _vwapCumTV  := ta.sma(_tp2 * volume, _barsIn24h) * _barsIn24h
+    _vwapCumVol := ta.sma(volume, _barsIn24h) * _barsIn24h
+
+float sessionVWAP    = _vwapCumVol > 0 ? _vwapCumTV / _vwapCumVol : close
+float vwapDist       = close - sessionVWAP
+float vwapDistPct    = sessionVWAP > 0 ? vwapDist / sessionVWAP * 100 : 0.0
+bool  aboveVWAP      = close > sessionVWAP
+bool  belowVWAP      = close < sessionVWAP
+bool  atVWAP         = math.abs(vwapDistPct) < 0.05
+bool  stretchedAbove = vwapDistPct >  0.3
+bool  stretchedBelow = vwapDistPct < -0.3
+
+// Draw VWAP line on chart
+plot(showVWAP ? sessionVWAP : na, title="Session VWAP", color=color.new(color.aqua, 20), linewidth=2, style=plot.style_line)
+
+// ======================================================
+// ORIGINAL CALCULATIONS (unchanged logic)
+// ======================================================
+float priceDelta = close - openH
+float _h5        = request.security(syminfo.tickerid, tf_high, high,   lookahead=barmerge.lookahead_on)
+float _l5        = request.security(syminfo.tickerid, tf_high, low,    lookahead=barmerge.lookahead_on)
+float _v5        = request.security(syminfo.tickerid, tf_high, volume, lookahead=barmerge.lookahead_on)
+float _spread    = _h5 - _l5
+float dvBuyVol   = _spread > 0 ? _v5 * (_c5 - _l5) / _spread : _v5 * 0.5
+float dvSellVol  = _spread > 0 ? _v5 * (_h5 - _c5) / _spread : _v5 * 0.5
+float dvTotal    = dvBuyVol + dvSellVol
+float dvRatio    = dvTotal > 0 ? dvBuyVol / dvTotal : 0.5
+float dvDelta    = dvBuyVol - dvSellVol
+bool  curIsGreen = _c5 > openH
+// Hidden Signal — use dvRatio threshold, not raw dvDelta sign
+// dvRatio > 0.55 on red candle = buyers dominated despite price falling
+// dvRatio < 0.45 on green candle = sellers dominated despite price rising
+bool  hiddenBuy  = dvRatio > 0.55 and not curIsGreen
+bool  hiddenSell = dvRatio < 0.45 and curIsGreen
+
+// OBV Divergence — compare 3-bar OBV slope vs 3-bar price slope directly
+// Avoids the broken OBV-PVT difference approach (cumulative noise)
+float _obv5     = request.security(syminfo.tickerid, tf_high, ta.cum(ta.change(close) > 0 ? volume : ta.change(close) < 0 ? -volume : 0.0), lookahead=barmerge.lookahead_on)
+float _obvChg   = _obv5 - nz(_obv5[3])
+float _priceChg = _c5   - nz(_c5[3])
+bool  obvDivBull = _obvChg > 0 and _priceChg < 0
+bool  obvDivBear = _obvChg < 0 and _priceChg > 0
+
+float _volAvg    = request.security(syminfo.tickerid, tf_high, ta.sma(volume, 20), lookahead=barmerge.lookahead_on)
+float _volRatio  = _volAvg > 0 ? _v5 / _volAvg : 1.0
+bool  volSpike   = _volRatio >= 1.5
+bool  volExhaust = volSpike and (_h5 - _l5) > 0 and math.abs(_c5 - openH) / (_h5 - _l5) < 0.35
+
+float deltaTrend        = f_delta(tf_trend)
+int   _trend_mins       = math.max(1, timeframe.in_seconds(tf_trend) / 60)
+int   _trend_len        = math.max(2, 1440 / _trend_mins)
+float sma_dTrend        = ta.sma(deltaTrend, _trend_len)
+bool  trend_bull        = deltaTrend > sma_dTrend
+bool  trend_bear        = deltaTrend < sma_dTrend
+bool  trend_aligned_buy  = trend_bull
+bool  trend_aligned_sell = trend_bear
+
+int   _tf_mins = math.max(1, timeframe.in_seconds() / 60)
+int   _sma_len = math.max(2, 1440 / _tf_mins)
+float sma_dH   = ta.sma(deltaH,     _sma_len)
+float sma_dL   = ta.sma(nz(deltaL), _sma_len)
+
+float _rH      = sma_dH != 0 ? math.abs(deltaH)     / math.abs(sma_dH) : 0.0
+float _fH      = math.max(0.5, math.min(_rH, 1.5))
+int   wtH_bull = deltaH > 0 ? math.round(wHigh * _fH / 1.5) : 0
+int   wtH_bear = deltaH < 0 ? math.round(wHigh * _fH / 1.5) : 0
+
+float _rL      = sma_dL != 0 ? math.abs(nz(deltaL)) / math.abs(sma_dL) : 0.0
+float _fL      = math.max(0.5, math.min(_rL, 1.5))
+int   wtL_bull = deltaL > 0 ? math.round(wLow  * _fL / 1.5) : 0
+int   wtL_bear = deltaL < 0 ? math.round(wLow  * _fL / 1.5) : 0
+
+// DV Hidden Signal boost (15% of total weight) - original
+int dvBoost   = math.round((wHigh + wLow) * 0.15)
+int wtDV_bull = hiddenBuy  ? dvBoost : 0
+int wtDV_bear = hiddenSell ? dvBoost : 0
+
+// NEW: ibCVD boost — adds up to 10% of total weight
+int ibCVD_boost_max = math.round((wHigh + wLow) * 0.10)
+int wtCVD_bull = ibCVD_norm > 0.2  ? math.round(ibCVD_boost_max * math.min(ibCVD_norm / 0.5, 1.0))           : 0
+int wtCVD_bear = ibCVD_norm < -0.2 ? math.round(ibCVD_boost_max * math.min(math.abs(ibCVD_norm) / 0.5, 1.0)) : 0
+
+int bull_weight = wtH_bull + wtL_bull + wtDV_bull + wtCVD_bull
+int bear_weight = wtH_bear + wtL_bear + wtDV_bear + wtCVD_bear
+
+int  totalW      = wHigh + wLow
+int  thresh      = math.round(totalW * sigThresh / 100)
+bool dvVetoBuy   = hiddenSell and bull_weight < math.round(thresh * 1.2)
+bool dvVetoSell  = hiddenBuy  and bear_weight < math.round(thresh * 1.2)
+// NEW: absorption veto — distribution against a buy or accumulation against a sell
+bool absVetoBuy  = absorbDist  and bull_weight < thresh + 5
+bool absVetoSell = absorbAccum and bear_weight < thresh + 5
+
+bool final_buy   = bull_weight >= thresh and deltaH > 0 and not dvVetoBuy  and not absVetoBuy
+bool final_sell  = bear_weight >= thresh and deltaH < 0 and not dvVetoSell and not absVetoSell
+
+// Reversal detection
+bool  conflict      = (deltaH > 0 and deltaL < 0) or (deltaH < 0 and deltaL > 0)
+float pricePct      = math.abs(priceDelta) / openH * 100
+bool  near_open     = pricePct < revThresh
+bool  reversal_up   = conflict and near_open and deltaL > 0
+bool  reversal_down = conflict and near_open and deltaL < 0
+
+// Reversal strength conditions (original 4 + new condition 5: ibCVD confirms)
+bool _c1     = (reversal_up and dvRatio < 0.5) or (reversal_down and dvRatio > 0.5)
+bool _c2     = (reversal_up and hiddenBuy) or (reversal_down and hiddenSell)
+bool _c3     = (reversal_up and obvDivBull) or (reversal_down and obvDivBear)
+bool _c4     = volSpike or volExhaust
+bool _c5_rev = (reversal_up and ibCVD_norm > 0.15) or (reversal_down and ibCVD_norm < -0.15)
+
+int   _condCount = (_c1 ? 1 : 0) + (_c2 ? 1 : 0) + (_c3 ? 1 : 0) + (_c4 ? 1 : 0) + (_c5_rev ? 1 : 0)
+float _prox      = near_open ? 1.0 - (pricePct / revThresh) : 0.0
+bool  revIdeal   = near_open and _condCount >= 3
+
+string revStrength = ""
+color  revStrCol   = color.gray
+if reversal_up or reversal_down
+    if _condCount >= 5
+        revStrength := "PERFECT (5/5)"
+        revStrCol   := color.fuchsia
+    else if _condCount == 4
+        revStrength := "Very Strong (4/5)"
+        revStrCol   := color.yellow
+    else if _condCount == 3
+        revStrength := "Strong (3/5)"
+        revStrCol   := color.aqua
+    else if _condCount == 2
+        revStrength := "Medium (2/5)"
+        revStrCol   := color.teal
+    else
+        revStrength := "weak (1/5)"
+        revStrCol   := color.gray
+
+bool revEntry_up_confirmed   = reversal_up   and revIdeal and _c2
+bool revEntry_down_confirmed = reversal_down and revIdeal and _c2
+
+float priceMomentum = math.max(0.5, math.min(pricePct / revThresh * 1.5, 1.5))
+float trendBoost    = 0.0
+if useTrend
+    if (final_buy and trend_aligned_buy) or (final_sell and trend_aligned_sell)
+        trendBoost :=  0.3
+    else if (final_buy and trend_bear) or (final_sell and trend_bull)
+        trendBoost := -0.3
+
+float finalMomentum = math.max(0.3, math.min(priceMomentum + trendBoost, 1.8))
+float combinedBull  = bull_weight * finalMomentum
+float combinedBear  = bear_weight * finalMomentum
+float maxScore      = totalW * 1.8
+
+string strengthLabel = ""
+color  strengthCol   = color.gray
+float  activeScore   = final_buy ? combinedBull : final_sell ? combinedBear : 0.0
+
+if final_buy or final_sell
+    if activeScore >= maxScore * 0.80
+        strengthLabel := "Very Strong"
+        strengthCol   := color.yellow
+    else if activeScore >= maxScore * 0.55
+        strengthLabel := "Strong"
+        strengthCol   := final_buy ? color.lime : color.red
+    else
+        strengthLabel := "Medium"
+        strengthCol   := final_buy ? color.green : color.orange
+else
+    strengthLabel := "—"
+
+// ======================================================
+// UPGRADE 7: COMPOSITE CONFIDENCE % (0-100)
+// 9 weighted sub-scores normalized to a single number
+// ======================================================
+float conf = 0.0
+if final_buy or final_sell
+    bool isBuy   = final_buy
+    // (a) Delta weight score normalized vs max achievable
+    float _wScore   = totalW > 0 ? math.min(activeScore / maxScore, 1.0) : 0.0
+    // (b) ibCVD alignment in signal direction
+    float _cvdScore = isBuy ? math.max(0.0, ibCVD_norm) : math.max(0.0, -ibCVD_norm)
+    // (c) Trend alignment
+    float _trendS   = (isBuy and trend_aligned_buy) or (not isBuy and trend_aligned_sell) ? 1.0 : trendBoost < 0 ? 0.0 : 0.5
+    // (d) Hidden signal confirms
+    float _hidS     = (isBuy and hiddenBuy) or (not isBuy and hiddenSell) ? 1.0 : 0.0
+    // (e) OBV divergence confirms
+    float _obvS     = (isBuy and obvDivBull) or (not isBuy and obvDivBear) ? 1.0 : 0.0
+    // (f) DV flow strength in signal direction
+    float _dvS      = isBuy ? math.max(0.0, dvRatio - 0.5) * 2.0 : math.max(0.0, 0.5 - dvRatio) * 2.0
+    // (g) Momentum slope aligned
+    float _slopeS   = (isBuy and ibMomAccel) or (not isBuy and (ibMomSlope < 0 and ibCVD_total < 0)) ? 1.0 : 0.3
+    // (h) No exhaustion (penalty if exhausted in signal direction)
+    float _exhS     = (isBuy and deltaExhBull) or (not isBuy and deltaExhBear) ? 0.2 : 1.0
+    // (i) Candle phase — early entry bonus, late entry penalty
+    float _phaseS   = candlePhasePct < 30 ? 1.0 : candlePhasePct < 60 ? 0.7 : timePressure ? 0.3 : 0.5
+
+    conf := (_wScore   * 0.25 +
+             _cvdScore * 0.20 +
+             _trendS   * 0.12 +
+             _hidS     * 0.10 +
+             _dvS      * 0.10 +
+             _obvS     * 0.08 +
+             _slopeS   * 0.07 +
+             _exhS     * 0.05 +
+             _phaseS   * 0.03) * 100.0
+
+int   confPct   = math.round(conf)
+color confColor = confPct >= 75 ? color.yellow : confPct >= 55 ? color.lime : confPct >= 40 ? color.teal : color.gray
+color confBg    = confPct >= 75 ? color.new(color.yellow, 60) : confPct >= 55 ? color.new(color.lime, 75) : confPct >= 40 ? color.new(color.teal, 75) : color.new(color.gray, 85)
+string confTxt  = (final_buy or final_sell) ? str.tostring(confPct) + "%" + (confPct >= 75 ? " FIRE" : confPct >= 55 ? " OK" : confPct >= 40 ? " LOW" : " WEAK") : "—"
+
+// Absorption display values — declared here so available for Next Candle prediction
+float _absRatDisplay = math.round((1.0 - _ibDeltaRat) * 100)
+string _absVolMult   = str.tostring(_ibVolRat, "#.#") + "x"
+string _absDirTxt    = ibCVD_total > 0 ? "UP" : ibCVD_total < 0 ? "DN" : "—"
+color  _absDirCol    = ibCVD_total > 0 ? color.lime : ibCVD_total < 0 ? color.red : color.gray
+
+// ======================================================
+// NEXT CANDLE PREDICTION
+// Combines all available signals into a single UP/DOWN %
+// Weighted by reliability and current candle phase
+// Higher phase = more data = more reliable prediction
+// ======================================================
+
+// Each factor votes UP (+) or DOWN (-) with a weight
+// Phase multiplier: prediction is more reliable late in candle
+float _phaseMulti = math.max(0.4, candlePhasePct / 100.0)
+
+// Factor 1 — Hidden Signal (most reliable, weight 25)
+float _nxt_hidden = 0.0
+if hiddenBuy
+    _nxt_hidden := 25.0
+else if hiddenSell
+    _nxt_hidden := -25.0
+
+// Factor 2 — Absorption direction (weight 20, bonus if late)
+float _nxt_absorb = 0.0
+if absorbAccum
+    _nxt_absorb := timePressure ? 22.0 : 15.0
+else if absorbDist
+    _nxt_absorb := timePressure ? -22.0 : -15.0
+else if ibCVD_total > 0 and _absRatDisplay >= 65 and not curIsGreen
+    _nxt_absorb := 10.0
+else if ibCVD_total < 0 and _absRatDisplay >= 65 and curIsGreen
+    _nxt_absorb := -10.0
+
+// Factor 3 — CVD vs price conflict (weight 20)
+float _nxt_cvd = 0.0
+if ibCVD_total > 0 and not curIsGreen
+    _nxt_cvd := reversal_up ? 20.0 : 12.0
+else if ibCVD_total < 0 and curIsGreen
+    _nxt_cvd := reversal_down ? -20.0 : -12.0
+else if ibCVD_total > 0 and curIsGreen
+    _nxt_cvd := 8.0
+else if ibCVD_total < 0 and not curIsGreen
+    _nxt_cvd := -8.0
+
+// Factor 4 — Exhaustion reversal signal (weight 10)
+float _nxt_exh = 0.0
+if deltaExhBull and curIsGreen
+    _nxt_exh := -10.0
+else if deltaExhBear and not curIsGreen
+    _nxt_exh := 10.0
+
+// Factor 5 — VWAP position (weight 10)
+float _nxt_vwap = 0.0
+if stretchedAbove and curIsGreen
+    _nxt_vwap := -10.0
+else if stretchedBelow and not curIsGreen
+    _nxt_vwap := 10.0
+else if aboveVWAP
+    _nxt_vwap := 5.0
+else if belowVWAP
+    _nxt_vwap := -5.0
+
+// Factor 6 — Momentum slope (weight 8)
+float _nxt_slope = 0.0
+if ibMomAccel and ibCVD_total > 0
+    _nxt_slope := 8.0
+else if ibMomAccel and ibCVD_total < 0
+    _nxt_slope := -8.0
+else if ibMomDecel and ibCVD_total > 0
+    _nxt_slope := -6.0
+else if ibMomDecel and ibCVD_total < 0
+    _nxt_slope := 6.0
+
+// Factor 7 — OBV divergence (weight 7)
+float _nxt_obv = 0.0
+if obvDivBull
+    _nxt_obv := 7.0
+else if obvDivBear
+    _nxt_obv := -7.0
+
+// Raw score: sum of all factors (-100 to +100 range)
+float _nxtRaw = _nxt_hidden + _nxt_absorb + _nxt_cvd + _nxt_exh + _nxt_vwap + _nxt_slope + _nxt_obv
+
+// Convert to 50-100% probability (50 = neutral, 100 = max confidence)
+// Apply phase multiplier — early candle = pulled toward 50, late = full score
+float _nxtScaled = 50.0 + (_nxtRaw * 0.5 * _phaseMulti)
+float _nxtPct    = math.max(5.0, math.min(95.0, _nxtScaled))
+
+// Direction and display
+bool   _nxtUp     = _nxtPct > 52.0
+bool   _nxtDown   = _nxtPct < 48.0
+bool   _nxtFlat   = not _nxtUp and not _nxtDown
+int    _nxtPctInt = math.round(_nxtPct)
+int    _nxtContra = 100 - _nxtPctInt
+
+// Active = timePressure (last ~20% of candle = about 1 min on 5m)
+// Before that: always shown but dimmed gray — "too early to act"
+bool _nxtActive = timePressure
+
+string _nxtDirTxt = ""
+string _nxtPctTxt = ""
+color  _nxtCol    = color.new(color.gray, 40)
+color  _nxtBg     = color.new(color.gray, 75)
+color  _nxtHdrBg  = color.new(color.navy, 30)
+
+if not _nxtActive
+    // Dimmed — candle not close enough to end
+    _nxtDirTxt := _nxtUp ? "▲  UP" : _nxtDown ? "▼  DOWN" : "◆  NEUTRAL"
+    _nxtPctTxt := str.tostring(_nxtUp ? _nxtPctInt : _nxtDown ? _nxtContra : 50) + "%  (wait)"
+    _nxtCol    := color.new(color.gray, 30)
+    _nxtBg     := color.new(color.gray, 80)
+    _nxtHdrBg  := color.new(color.navy, 40)
+else if _nxtUp
+    // ACTIVE — candle closing soon, signal is live
+    _nxtDirTxt := "▲  UP"
+    _nxtPctTxt := str.tostring(_nxtPctInt) + "%  ⏰ LIVE"
+    if _nxtPctInt >= 75
+        _nxtCol   := color.white
+        _nxtBg    := color.new(color.green, 5)
+        _nxtHdrBg := color.new(color.green, 10)
+    else if _nxtPctInt >= 62
+        _nxtCol   := color.lime
+        _nxtBg    := color.new(color.green, 25)
+        _nxtHdrBg := color.new(color.green, 25)
+    else
+        _nxtCol   := color.lime
+        _nxtBg    := color.new(color.green, 50)
+        _nxtHdrBg := color.new(color.navy, 20)
+else if _nxtDown
+    // ACTIVE — candle closing soon, signal is live
+    _nxtDirTxt := "▼  DOWN"
+    _nxtPctTxt := str.tostring(_nxtContra) + "%  ⏰ LIVE"
+    if _nxtContra >= 75
+        _nxtCol   := color.white
+        _nxtBg    := color.new(color.red, 5)
+        _nxtHdrBg := color.new(color.red, 10)
+    else if _nxtContra >= 62
+        _nxtCol   := color.red
+        _nxtBg    := color.new(color.red, 25)
+        _nxtHdrBg := color.new(color.red, 25)
+    else
+        _nxtCol   := color.red
+        _nxtBg    := color.new(color.red, 50)
+        _nxtHdrBg := color.new(color.navy, 20)
+else
+    _nxtDirTxt := "◆  NEUTRAL"
+    _nxtPctTxt := "50%  ⏰ LIVE"
+    _nxtCol    := color.gray
+    _nxtBg     := color.new(color.gray, 60)
+    _nxtHdrBg  := color.new(color.navy, 20)
+
+// Signal text
+string signal   = "WAIT"
+color  sigColor = color.gray
+color  sigBg    = color.new(color.gray, 70)
+if final_buy
+    signal   := "BUY"
+    sigColor := color.white
+    sigBg    := color.new(color.green, 15)
+else if final_sell
+    signal   := "SELL"
+    sigColor := color.white
+    sigBg    := color.new(color.red, 15)
+
+// Phase label on chart — only on active bar, deleted and redrawn each tick
+var label _phaseLabel = na
+if showPhaseBar and (barstate.islast or barstate.isrealtime)
+    if not na(_phaseLabel)
+        label.delete(_phaseLabel)
+    string _phaseLblTxt = str.tostring(candlePhasePct) + "%" + (timePressure ? " ⏰" : "")
+    color  _phaseLblBg  = timePressure ? color.new(color.orange, 30) : color.new(color.navy, 40)
+    _phaseLabel := label.new(bar_index, high, _phaseLblTxt, style=label.style_label_down, color=_phaseLblBg, textcolor=color.white, size=size.small)
+
+// ======================================================
+// TABLE — 20 rows
+// ======================================================
+var table dash = table.new(
+     tablePos == "top_left"      ? position.top_left      :
+     tablePos == "bottom_right"  ? position.bottom_right  :
+     tablePos == "bottom_left"   ? position.bottom_left   :
+     tablePos == "top_center"    ? position.top_center    :
+     tablePos == "bottom_center" ? position.bottom_center :
+     position.top_right,
+     2, 23,
+     bgcolor      = color.new(color.black, 15),
+     border_width = 1,
+     border_color = color.new(color.gray, 60),
+     frame_width  = 2,
+     frame_color  = color.new(color.white, 60))
+
+// ── NEXT CANDLE PREDICTION rows inserted at top ──
+// Row 0 — Next Candle header
+table.cell(dash, 0, 0, "NEXT CANDLE",  text_color=color.new(color.silver,10), text_size=size.tiny,   bgcolor=_nxtHdrBg, text_halign=text.align_center)
+table.cell(dash, 1, 0, str.tostring(candlePhasePct) + "% done", text_color=timePressure ? color.yellow : color.new(color.gray,20), text_size=size.tiny, bgcolor=_nxtHdrBg, text_halign=text.align_center)
+// Row 1 — Next Candle prediction
+table.cell(dash, 0, 1, _nxtDirTxt, text_color=_nxtCol, text_size=size.large,  bgcolor=_nxtBg, text_halign=text.align_center)
+table.cell(dash, 1, 1, _nxtPctTxt, text_color=_nxtCol, text_size=size.large,  bgcolor=_nxtBg, text_halign=text.align_center)
+
+string dHtxt   = str.tostring(deltaH, "#")
+string dLtxt   = str.tostring(deltaL, "#")
+color  dHcol   = deltaH > 0 ? color.lime : deltaH < 0 ? color.red : color.gray
+color  dLcol   = deltaL > 0 ? color.lime : deltaL < 0 ? color.red : color.gray
+string wHtxt   = str.tostring(wtH_bull > 0 ? wtH_bull : wtH_bear > 0 ? -wtH_bear : 0) + "pt"
+string wLtxt   = str.tostring(wtL_bull > 0 ? wtL_bull : wtL_bear > 0 ? -wtL_bear : 0) + "pt"
+string openTxt = str.tostring(openH, "#.0")
+string pdTxt   = (priceDelta >= 0 ? "+" : "") + str.tostring(priceDelta, "#.0")
+color  pdCol   = priceDelta > 0 ? color.lime : priceDelta < 0 ? color.red : color.gray
+color  C_LBL   = color.new(color.silver, 0)
+color  C_BG    = color.new(color.black, 50)
+
+// Row 0 — Header
+table.cell(dash, 0, 2, "DELTA MTF v3",          text_color=color.white, text_size=size.normal, bgcolor=color.new(color.navy, 10), text_halign=text.align_center)
+table.cell(dash, 1, 2, tf_low + " . " + tf_high, text_color=C_LBL,     text_size=size.small,  bgcolor=color.new(color.navy, 10), text_halign=text.align_center)
+// Row 1 — Open
+table.cell(dash, 0, 3, "OPEN " + tf_high, text_color=C_LBL,       text_size=size.small,  bgcolor=C_BG)
+table.cell(dash, 1, 3, openTxt,            text_color=color.white, text_size=size.normal, bgcolor=color.new(color.black, 60))
+// Row 2 — Price Delta
+table.cell(dash, 0, 4, "DELTA PRICE", text_color=C_LBL, text_size=size.small,  bgcolor=C_BG)
+table.cell(dash, 1, 4, pdTxt,         text_color=pdCol,  text_size=size.normal, bgcolor=color.new(pdCol, 80))
+// Row 3 — Delta High TF
+table.cell(dash, 0, 5, "D " + tf_high + " [" + wHtxt + "]", text_color=C_LBL, text_size=size.small,  bgcolor=C_BG)
+table.cell(dash, 1, 5, dHtxt,                                 text_color=dHcol, text_size=size.normal, bgcolor=color.new(dHcol, 80))
+// Row 4 — Delta Low TF (last sub-bar)
+table.cell(dash, 0, 6, "D " + tf_low + " [" + wLtxt + "]", text_color=C_LBL, text_size=size.small,  bgcolor=C_BG)
+table.cell(dash, 1, 6, dLtxt,                                text_color=dLcol, text_size=size.normal, bgcolor=color.new(dLcol, 80))
+// Row 5 — ibCVD (NEW)
+float  ibPct    = math.round(ibCVD_ratio * 100)
+string ibCVDtxt = str.tostring(ibPct) + "% buy  (" + str.tostring(_arr_size) + "/" + str.tostring(_expectedSubs) + " bars)"
+color  ibCVDcol = ibCVD_ratio > 0.6 ? color.lime : ibCVD_ratio < 0.4 ? color.red : color.gray
+color  ibCVDbg  = ibCVD_ratio > 0.6 ? color.new(color.lime, 75) : ibCVD_ratio < 0.4 ? color.new(color.red, 75) : color.new(color.gray, 85)
+table.cell(dash, 0, 7, "IB CVD",  text_color=C_LBL,    text_size=size.small, bgcolor=C_BG)
+table.cell(dash, 1, 7, ibCVDtxt,  text_color=ibCVDcol, text_size=size.small, bgcolor=ibCVDbg)
+// Row 6 — Candle Phase (NEW)
+string phaseTxt = str.tostring(candlePhasePct) + "%" + (timePressure ? " URGENT" : "")
+color  phaseCol = timePressure ? color.orange : candlePhasePct > 50 ? color.yellow : color.gray
+color  phaseBg  = timePressure ? color.new(color.orange, 60) : color.new(color.gray, 85)
+table.cell(dash, 0, 8, "PHASE",   text_color=C_LBL,   text_size=size.small, bgcolor=C_BG)
+table.cell(dash, 1, 8, phaseTxt,  text_color=phaseCol, text_size=size.small, bgcolor=phaseBg)
+// Row 7 — IB Slope (NEW)
+table.cell(dash, 0, 9, "IB SLOPE", text_color=C_LBL,   text_size=size.small, bgcolor=C_BG)
+table.cell(dash, 1, 9, slopeTxt,   text_color=slopeCol, text_size=size.small, bgcolor=color.new(slopeCol, 85))
+// Row 8 — Delta Exhaustion (NEW)
+string _exhMode = _useIntrabar ? " [ib]" : " [roll]"
+string exhTxt = deltaExhausted ? (deltaExhBull ? "BULL EXHAUST" : "BEAR EXHAUST") + _exhMode : str.tostring(_flipCount) + " flips" + _exhMode
+color  exhCol = deltaExhausted ? color.orange : _flipCount >= 2 ? color.yellow : color.gray
+color  exhBg  = deltaExhausted ? color.new(color.orange, 60) : color.new(color.gray, 85)
+table.cell(dash, 0, 10, "EXHAUST", text_color=C_LBL,  text_size=size.small, bgcolor=C_BG)
+table.cell(dash, 1, 10, exhTxt,    text_color=exhCol, text_size=size.small, bgcolor=exhBg)
+// Row 9 — Absorption (NEW)
+// Absorption — always show live ratio + direction even when threshold not crossed
+
+string absorbTxt = ""
+color  absorbCol = color.gray
+color  absorbBg  = color.new(color.gray, 85)
+
+if absorbAccum
+    absorbTxt := "ACCUM " + _absDirTxt + "  " + str.tostring(_absRatDisplay) + "% " + _absVolMult
+    absorbCol := color.lime
+    absorbBg  := color.new(color.lime, 60)
+else if absorbDist
+    absorbTxt := "DIST " + _absDirTxt + "  " + str.tostring(_absRatDisplay) + "% " + _absVolMult
+    absorbCol := color.red
+    absorbBg  := color.new(color.red, 60)
+else if absorbed
+    absorbTxt := "ABS " + _absDirTxt + "  " + str.tostring(_absRatDisplay) + "% " + _absVolMult
+    absorbCol := color.yellow
+    absorbBg  := color.new(color.yellow, 75)
+else
+    // Always show live reading even when not triggered
+    absorbTxt := _absDirTxt + "  " + str.tostring(_absRatDisplay) + "%  vol " + _absVolMult
+    absorbCol := _absRatDisplay >= 70 ? color.yellow : _absDirCol
+    absorbBg  := color.new(color.gray, 85)
+
+table.cell(dash, 0, 11, "ABSORB",  text_color=C_LBL,    text_size=size.small, bgcolor=C_BG)
+table.cell(dash, 1, 11, absorbTxt, text_color=absorbCol, text_size=size.small, bgcolor=absorbBg)
+// Row 10 — POC + Rolling POC
+float _rPocDist    = not na(rollingPOC) ? close - rollingPOC : na
+string _rPocDistTxt = not na(_rPocDist) ? ((_rPocDist >= 0 ? "+" : "") + str.tostring(_rPocDist, "#.0")) : ""
+string pocTxt2 = not na(pocPrice) ? str.tostring(pocPrice, "#.0") + " d" + pocDistTxt : "—"
+string rPocTxt = not na(rollingPOC) ? str.tostring(rollingPOC, "#.0") + " d" + _rPocDistTxt : "—"
+color  rPocCol = not na(_rPocDist) ? (_rPocDist > 0 ? color.lime : color.red) : color.gray
+table.cell(dash, 0, 12, "POC / rPOC", text_color=C_LBL, text_size=size.tiny,  bgcolor=C_BG)
+table.cell(dash, 1, 12, pocTxt2 + "  |  " + rPocTxt, text_color=pocDistCol, text_size=size.tiny, bgcolor=C_BG)
+// Row 10b — Session VWAP
+string vwapTxt = str.tostring(sessionVWAP, "#.0") + "  " + (vwapDistPct >= 0 ? "+" : "") + str.tostring(vwapDistPct, "#.00") + "%"
+color  vwapCol = stretchedAbove ? color.yellow : aboveVWAP ? color.lime : stretchedBelow ? color.orange : color.red
+color  vwapBg  = atVWAP ? color.new(color.aqua, 60) : C_BG
+table.cell(dash, 0, 13, "VWAP",   text_color=C_LBL,  text_size=size.small,  bgcolor=C_BG)
+table.cell(dash, 1, 13, vwapTxt,  text_color=vwapCol, text_size=size.small, bgcolor=vwapBg)
+// Row 11 shifted — Confidence (NEW)
+table.cell(dash, 0, 14, "CONF",   text_color=color.white, text_size=size.small,  bgcolor=color.new(color.navy, 30))
+table.cell(dash, 1, 14, confTxt,  text_color=confColor,   text_size=size.normal, bgcolor=confBg)
+// Row 12 — Signal
+table.cell(dash, 0, 15, "SIGNAL", text_color=color.white, text_size=size.normal, bgcolor=sigBg)
+table.cell(dash, 1, 15, signal,   text_color=sigColor,    text_size=size.large,  bgcolor=sigBg)
+// Row 13 — Strength
+table.cell(dash, 0, 16, "STRENGTH",    text_color=C_LBL,      text_size=size.small, bgcolor=C_BG)
+table.cell(dash, 1, 16, strengthLabel, text_color=strengthCol, text_size=size.small, bgcolor=color.new(strengthCol, 80))
+// Row 14 — Reversal
+string revDir = reversal_up ? "REV UP" : reversal_down ? "REV DN" : "—"
+string revTxt = (reversal_up or reversal_down) ? revDir + "  " + revStrength : "—"
+color  revBg  = reversal_up ? color.new(color.teal, 20) : reversal_down ? color.new(color.purple, 20) : color.new(color.gray, 70)
+color  revCol = (reversal_up or reversal_down) ? revStrCol : color.gray
+table.cell(dash, 0, 17, "REVERSAL", text_color=C_LBL,  text_size=size.small, bgcolor=C_BG)
+table.cell(dash, 1, 17, revTxt,     text_color=revCol, text_size=size.small, bgcolor=revBg)
+// Row 15 — Trend
+string trendTxt = trend_bull ? "BULL" : trend_bear ? "BEAR" : "—"
+color  trendCol = trend_bull ? color.lime : trend_bear ? color.red : color.gray
+color  trendBg  = C_BG
+if useTrend and (final_buy or final_sell)
+    trendBg := trendBoost > 0 ? color.new(color.green, 60) : color.new(color.red, 60)
+table.cell(dash, 0, 18, "TREND " + tf_trend, text_color=C_LBL,    text_size=size.small,  bgcolor=C_BG)
+table.cell(dash, 1, 18, trendTxt,             text_color=trendCol, text_size=size.normal, bgcolor=trendBg)
+// Row 16 — DV Flow
+string dvFlowTxt = dvRatio > 0.6 ? "BUY " + str.tostring(math.round(dvRatio * 100)) + "%" : dvRatio < 0.4 ? "SELL " + str.tostring(math.round((1 - dvRatio) * 100)) + "%" : "NEUTRAL"
+color  dvFlowCol = dvRatio > 0.6 ? color.lime : dvRatio < 0.4 ? color.red : color.gray
+color  dvFlowBg  = dvRatio > 0.6 ? color.new(color.lime, 80) : dvRatio < 0.4 ? color.new(color.red, 80) : color.new(color.gray, 80)
+table.cell(dash, 0, 19, "DV FLOW",  text_color=C_LBL,     text_size=size.small,  bgcolor=C_BG)
+table.cell(dash, 1, 19, dvFlowTxt,  text_color=dvFlowCol, text_size=size.normal, bgcolor=dvFlowBg)
+// Row 17 — Hidden Signal
+string hidTxt = hiddenBuy ? "HIDDEN BUY" : hiddenSell ? "HIDDEN SELL" : "—"
+color  hidCol = hiddenBuy ? color.lime : hiddenSell ? color.red : color.gray
+color  hidBg  = hiddenBuy ? color.new(color.lime, 60) : hiddenSell ? color.new(color.red, 60) : color.new(color.gray, 80)
+table.cell(dash, 0, 20, "HIDDEN SIG", text_color=C_LBL,  text_size=size.small,  bgcolor=C_BG)
+table.cell(dash, 1, 20, hidTxt,       text_color=hidCol, text_size=size.normal, bgcolor=hidBg)
+// Row 18 — OBV Div
+string obvDivTxt = obvDivBear ? "BEAR DIV" : obvDivBull ? "BULL DIV" : "—"
+color  obvDivCol = obvDivBear ? color.orange : obvDivBull ? color.yellow : color.gray
+color  obvDivBg  = obvDivBear ? color.new(color.orange, 70) : obvDivBull ? color.new(color.yellow, 70) : color.new(color.gray, 85)
+table.cell(dash, 0, 21, "OBV DIV",  text_color=C_LBL,     text_size=size.small,  bgcolor=C_BG)
+table.cell(dash, 1, 21, obvDivTxt,  text_color=obvDivCol, text_size=size.normal, bgcolor=obvDivBg)
+// Row 19 — Volume
+string volTxt = volExhaust ? "EXHAUST x" + str.tostring(_volRatio, "#.#") : volSpike ? "SPIKE x" + str.tostring(_volRatio, "#.#") : "normal"
+color  volCol = volExhaust ? color.yellow : volSpike ? color.lime : color.gray
+color  volBg  = volExhaust ? color.new(color.yellow, 70) : volSpike ? color.new(color.lime, 80) : color.new(color.gray, 85)
+table.cell(dash, 0, 22, "VOLUME", text_color=C_LBL,  text_size=size.small,  bgcolor=C_BG)
+table.cell(dash, 1, 22, volTxt,   text_color=volCol, text_size=size.normal, bgcolor=volBg)
+
+// ======================================================
+// REVERSAL PROBABILITY TABLE
+// Scores probability of price reversing WITHIN current candle
+// Question: "should I bet AGAINST the current price direction?"
+// 5 factors, max score ±9
+// ======================================================
+
+// Factor 1 — Hidden Signal (max ±3)
+// Volume opposing candle color = strongest reversal pressure
+int _revHidden = 0
+if hiddenBuy and not curIsGreen
+    _revHidden := 3
+else if hiddenSell and curIsGreen
+    _revHidden := 3
+
+// Factor 2 — Absorption (max ±2, extra point if late in candle)
+// Big volume + flat delta = someone absorbing the move
+int _revAbsorb = 0
+if absorbAccum and not curIsGreen
+    _revAbsorb := timePressure ? 2 : 1
+else if absorbDist and curIsGreen
+    _revAbsorb := timePressure ? 2 : 1
+
+// Factor 3 — CVD conflict with price (max ±2)
+// Intrabar buyers opposing a red candle or vice versa
+int _revCVD = 0
+if ibCVD_total > 0 and not curIsGreen
+    _revCVD := reversal_up ? 2 : 1
+else if ibCVD_total < 0 and curIsGreen
+    _revCVD := reversal_down ? 2 : 1
+
+// Factor 4 — Exhaustion (max ±1)
+// Delta flips shrinking = move running out of fuel
+int _revExhaust = 0
+if deltaExhBull and curIsGreen
+    _revExhaust := 1
+else if deltaExhBear and not curIsGreen
+    _revExhaust := 1
+
+// Factor 5 — Price stretched from open (max ±1)
+// The further price has moved, the more elastic the snap back
+float _stretchPct = openH > 0 ? math.abs(priceDelta) / openH * 100 : 0.0
+// VWAP stretch adds to reversal probability:
+// price stretched far above VWAP on green candle = reversal pressure up
+// price stretched far below VWAP on red candle = reversal pressure up
+bool  _vwapStretchRev = (stretchedAbove and curIsGreen) or (stretchedBelow and not curIsGreen)
+int   _revStretch = (_stretchPct > revThresh * 1.5 ? 1 : 0) + (_vwapStretchRev ? 1 : 0)
+
+// Total reversal score 0–9 (always positive — it's a probability not a direction)
+int _revTotal = _revHidden + _revAbsorb + _revCVD + _revExhaust + _revStretch
+int _revMax   = 10
+
+// Reversal direction — against current candle
+bool _revBullish = not curIsGreen  // price is red → reversal = bullish
+bool _revBearish = curIsGreen      // price is green → reversal = bearish
+
+// Probability label
+string _revProbTxt = "LOW"
+string _revDirTxt  = "—"
+string _revAdvice  = "no edge"
+color  _revProbCol = color.gray
+color  _revDirCol  = color.gray
+color  _revBg      = color.new(color.gray, 70)
+color  _revHdrBg   = color.new(color.navy, 30)
+
+if _revTotal >= 7
+    _revProbTxt := "VERY HIGH"
+    _revAdvice  := "strong bet"
+    _revProbCol := color.yellow
+    _revBg      := _revBullish ? color.new(color.green, 10) : color.new(color.red, 10)
+    _revHdrBg   := color.new(color.purple, 10)
+else if _revTotal >= 5
+    _revProbTxt := "HIGH"
+    _revAdvice  := "good edge"
+    _revProbCol := color.lime
+    _revBg      := _revBullish ? color.new(color.green, 25) : color.new(color.red, 25)
+    _revHdrBg   := color.new(color.purple, 20)
+else if _revTotal >= 3
+    _revProbTxt := "MODERATE"
+    _revAdvice  := "weak edge"
+    _revProbCol := color.aqua
+    _revBg      := _revBullish ? color.new(color.green, 50) : color.new(color.red, 50)
+    _revHdrBg   := color.new(color.navy, 20)
+else
+    _revProbTxt := "LOW"
+    _revAdvice  := "no edge"
+    _revProbCol := color.gray
+    _revBg      := color.new(color.gray, 70)
+
+if _revTotal >= 3
+    _revDirTxt := _revBullish ? "BUY REV 🟢" : "SELL REV 🔴"
+    _revDirCol := _revBullish ? color.lime : color.red
+else
+    _revDirTxt := "no signal"
+    _revDirCol := color.gray
+
+// Score bar — visual fill showing how many factors fired (out of 9)
+string _bar = ""
+int _filled = math.round(float(_revTotal) / float(_revMax) * 8)
+for _bi = 0 to 7
+    _bar := _bar + (_bi < _filled ? "█" : "░")
+
+// Factor row helpers
+f_revCell(int _s, int _maxS) =>
+    string _t = _s > 0 ? "+" + str.tostring(_s) : "—"
+    color  _c = _s > 0 ? color.lime : color.new(color.gray, 40)
+    color  _b = _s > 0 ? color.new(color.lime, 80) : color.new(color.black, 50)
+    [_t, _c, _b]
+
+[_rh_t, _rh_c, _rh_b] = f_revCell(_revHidden,  3)
+[_ra_t, _ra_c, _ra_b] = f_revCell(_revAbsorb,  2)
+[_rc_t, _rc_c, _rc_b] = f_revCell(_revCVD,     2)
+[_re_t, _re_c, _re_b] = f_revCell(_revExhaust, 1)
+[_rs_t, _rs_c, _rs_b] = f_revCell(_revStretch, 1)
+
+color C_HDR2 = color.new(color.gray, 30)
+color C_BG2  = color.new(color.black, 50)
+
+var table biasTbl = table.new(
+     biasTblPos == "top_right"     ? position.top_right     :
+     biasTblPos == "top_left"      ? position.top_left      :
+     biasTblPos == "bottom_left"   ? position.bottom_left   :
+     biasTblPos == "top_center"    ? position.top_center    :
+     biasTblPos == "bottom_center" ? position.bottom_center :
+     position.bottom_right,
+     3, 9,
+     bgcolor      = color.new(color.black, 20),
+     border_width = 1,
+     border_color = color.new(color.gray, 55),
+     frame_width  = 2,
+     frame_color  = color.new(color.purple, 35))
+
+// Row 0 — Header
+table.cell(biasTbl, 0, 0, "REVERSAL PROB", text_color=color.white,    text_size=size.small,  bgcolor=_revHdrBg, text_halign=text.align_center)
+table.cell(biasTbl, 1, 0, "vs candle",     text_color=color.new(color.silver,20), text_size=size.tiny, bgcolor=_revHdrBg, text_halign=text.align_center)
+table.cell(biasTbl, 2, 0, str.tostring(candlePhasePct) + "% done", text_color=timePressure ? color.yellow : color.silver, text_size=size.tiny, bgcolor=_revHdrBg, text_halign=text.align_center)
+// Row 1 — Direction
+table.cell(biasTbl, 0, 1, "DIRECTION", text_color=color.new(color.silver,0), text_size=size.tiny,   bgcolor=C_BG2)
+table.cell(biasTbl, 1, 1, _revDirTxt,  text_color=_revDirCol,               text_size=size.normal, bgcolor=_revBg, text_halign=text.align_center)
+table.cell(biasTbl, 2, 1, _revAdvice,  text_color=_revProbCol,               text_size=size.tiny,   bgcolor=_revBg, text_halign=text.align_center)
+// Row 2 — Probability + score bar
+table.cell(biasTbl, 0, 2, "PROB",       text_color=color.new(color.silver,0), text_size=size.tiny,   bgcolor=C_BG2)
+table.cell(biasTbl, 1, 2, _revProbTxt,  text_color=_revProbCol,               text_size=size.normal, bgcolor=C_BG2, text_halign=text.align_center)
+table.cell(biasTbl, 2, 2, str.tostring(_revTotal) + "/" + str.tostring(_revMax), text_color=_revProbCol, text_size=size.small, bgcolor=C_BG2, text_halign=text.align_center)
+// Row 3 — Score bar visual
+table.cell(biasTbl, 0, 3, "STRENGTH",   text_color=color.new(color.silver,0), text_size=size.tiny,   bgcolor=C_BG2)
+table.cell(biasTbl, 1, 3, _bar,         text_color=_revProbCol,               text_size=size.small,  bgcolor=C_BG2, text_halign=text.align_center)
+table.cell(biasTbl, 2, 3, "",           text_color=color.gray,                text_size=size.tiny,   bgcolor=C_BG2)
+// Row 4 — Column headers
+table.cell(biasTbl, 0, 4, "FACTOR",     text_color=C_HDR2, text_size=size.tiny, bgcolor=color.new(color.black, 70))
+table.cell(biasTbl, 1, 4, "STATUS",     text_color=C_HDR2, text_size=size.tiny, bgcolor=color.new(color.black, 70))
+table.cell(biasTbl, 2, 4, "PTS",        text_color=C_HDR2, text_size=size.tiny, bgcolor=color.new(color.black, 70))
+// Row 5 — Hidden Signal
+table.cell(biasTbl, 0, 5, "Hidden",     text_color=color.silver, text_size=size.tiny, bgcolor=C_BG2)
+table.cell(biasTbl, 1, 5, hiddenBuy and not curIsGreen ? "vs RED" : hiddenSell and curIsGreen ? "vs GRN" : "—", text_color=_rh_c, text_size=size.tiny, bgcolor=C_BG2)
+table.cell(biasTbl, 2, 5, _rh_t,        text_color=_rh_c, text_size=size.small, bgcolor=_rh_b)
+// Row 6 — Absorption
+table.cell(biasTbl, 0, 6, "Absorb",     text_color=color.silver, text_size=size.tiny, bgcolor=C_BG2)
+table.cell(biasTbl, 1, 6, absorbAccum and not curIsGreen ? "vs RED" : absorbDist and curIsGreen ? "vs GRN" : "—", text_color=_ra_c, text_size=size.tiny, bgcolor=C_BG2)
+table.cell(biasTbl, 2, 6, _ra_t,        text_color=_ra_c, text_size=size.small, bgcolor=_ra_b)
+// Row 7 — CVD conflict
+table.cell(biasTbl, 0, 7, "CVD",        text_color=color.silver, text_size=size.tiny, bgcolor=C_BG2)
+table.cell(biasTbl, 1, 7, ibCVD_total > 0 and not curIsGreen ? "bull vs RED" : ibCVD_total < 0 and curIsGreen ? "bear vs GRN" : "—", text_color=_rc_c, text_size=size.tiny, bgcolor=C_BG2)
+table.cell(biasTbl, 2, 7, _rc_t,        text_color=_rc_c, text_size=size.small, bgcolor=_rc_b)
+// Row 8 — Exhaustion + Stretch combined
+table.cell(biasTbl, 0, 8, "Exh+Str",   text_color=color.silver, text_size=size.tiny, bgcolor=C_BG2)
+table.cell(biasTbl, 1, 8, deltaExhausted ? "exhaust" : _stretchPct > revThresh * 1.5 ? "stretched" : "—", text_color=color.new(color.silver,20), text_size=size.tiny, bgcolor=C_BG2)
+table.cell(biasTbl, 2, 8, "+" + str.tostring(_revExhaust + _revStretch), text_color=_revExhaust + _revStretch > 0 ? color.lime : color.gray, text_size=size.small, bgcolor=_revExhaust + _revStretch > 0 ? color.new(color.lime, 80) : C_BG2)
+
+// Alerts
+alertcondition(_revTotal >= 7, title="REVERSAL VERY HIGH 🔥", message="Delta MTF v3 — REVERSAL probability VERY HIGH")
+alertcondition(_revTotal >= 5, title="REVERSAL HIGH",          message="Delta MTF v3 — REVERSAL probability HIGH")
+alertcondition(_revTotal >= 7 and timePressure, title="REVERSAL FIRE AT CLOSE 🔥", message="Delta MTF v3 — REVERSAL VERY HIGH at candle close")
+
+// ======================================================
+// UPGRADE 8: RICH ALERT MESSAGES
+// Every alert carries: ticker, price, delta, CVD, phase, confidence, strength
+// ======================================================
+alertcondition(_nxtUp   and _nxtPctInt >= 75 and timePressure, title="NEXT UP 75%+",   message="Delta MTF v3 — Next candle UP 75%+ at close")
+alertcondition(_nxtDown and _nxtContra >= 75 and timePressure, title="NEXT DOWN 75%+", message="Delta MTF v3 — Next candle DOWN 75%+ at close")
+alertcondition(final_buy  and strengthLabel == "Very Strong", title="BUY Very Strong",  message="Delta MTF v3 — BUY Very Strong")
+alertcondition(final_buy  and strengthLabel == "Strong",      title="BUY Strong",        message="Delta MTF v3 — BUY Strong")
+alertcondition(final_buy  and strengthLabel == "Medium",      title="BUY Medium",        message="Delta MTF v3 — BUY Medium")
+alertcondition(final_sell and strengthLabel == "Very Strong", title="SELL Very Strong",  message="Delta MTF v3 — SELL Very Strong")
+alertcondition(final_sell and strengthLabel == "Strong",      title="SELL Strong",       message="Delta MTF v3 — SELL Strong")
+alertcondition(final_sell and strengthLabel == "Medium",      title="SELL Medium",       message="Delta MTF v3 — SELL Medium")
+alertcondition(hiddenBuy,                                     title="HIDDEN BUY",        message="Delta MTF v3 — Hidden BUY detected")
+alertcondition(hiddenSell,                                    title="HIDDEN SELL",       message="Delta MTF v3 — Hidden SELL detected")
+alertcondition(reversal_up,                                   title="REVERSAL UP",       message="Delta MTF v3 — Reversal UP")
+alertcondition(reversal_down,                                 title="REVERSAL DOWN",     message="Delta MTF v3 — Reversal DOWN")
+alertcondition(revEntry_up_confirmed,                         title="REV ENTRY LONG",    message="Delta MTF v3 — Reversal LONG CONFIRMED")
+alertcondition(revEntry_down_confirmed,                       title="REV ENTRY SHORT",   message="Delta MTF v3 — Reversal SHORT CONFIRMED")
+alertcondition(deltaExhBull,                                  title="BULL EXHAUSTION",   message="Delta MTF v3 — Bull Delta EXHAUSTED")
+alertcondition(deltaExhBear,                                  title="BEAR EXHAUSTION",   message="Delta MTF v3 — Bear Delta EXHAUSTED")
+alertcondition(absorbAccum,                                   title="ACCUMULATION",      message="Delta MTF v3 — Absorption ACCUMULATION")
+alertcondition(absorbDist,                                    title="DISTRIBUTION",      message="Delta MTF v3 — Absorption DISTRIBUTION")
+alertcondition(timePressure and (final_buy or final_sell),    title="TIME PRESSURE",     message="Delta MTF v3 — Signal at candle close")
+alertcondition(final_buy  and confPct >= 75,                  title="HIGH CONF BUY",     message="Delta MTF v3 — HIGH CONFIDENCE BUY")
+alertcondition(final_sell and confPct >= 75,                  title="HIGH CONF SELL",    message="Delta MTF v3 — HIGH CONFIDENCE SELL")
+
