@@ -7,73 +7,47 @@
 
 ### 1. Architectural Efficiency & Optimization
 
-The script demonstrates a high level of architectural maturity, designed for efficient, real-time computation.
+The script's architecture is built around a state machine, managed by several `var` declared variables (`trailingStop`, `direction`, `isAdjusting`, etc.). This is the most efficient pattern for path-dependent indicators like trailing stops, as it prevents the recalculation of the entire stop history on every new bar. The state is updated incrementally, ensuring a minimal computational footprint.
 
-*   **Computational Footprint:** The script's design is exceptionally lightweight. It avoids iterative loops (`for` statements) entirely, relying on Pine Script's native bar-series processing model. The core logic is event-driven, executing calculations only when specific state transitions occur (e.g., `if isAdjusting`). The `sigmoid` function, while mathematically sophisticated, involves a handful of floating-point operations and is only called during the adjustment phase, not on every bar, minimizing its impact.
+*   **Computational Footprint:** The script is exceptionally lightweight. The primary calculation per bar is `ta.atr()`, which is highly optimized. The subsequent logic consists of a series of conditional checks and basic arithmetic. There are no performance-intensive loops or complex recursive calculations. The script will perform smoothly even on 1-second charts.
+*   **Redundant Calculations:** There are no redundant calculations. The use of `var` ensures that state variables persist from one bar to the next without being re-initialized. The logic is sequential and concise.
+*   **`max_bars_back`:** The script implicitly requires history primarily for the `ta.atr(atrLengthInput)` calculation. With a default `atrLengthInput` of 200, Pine Script will automatically manage the necessary historical buffer (approx. 200 bars). This is a standard and acceptable memory footprint for this type of indicator.
+*   **Built-in Functions:** The script leverages built-in functions like `ta.atr`, `math.min`/`max`, and `ta.change` effectively. The custom `sigmoid` function, while mathematically involved, is a single, non-iterative calculation per bar and poses no performance threat.
 
-*   **State Management:** The use of `var` for state variables (`trailingStop`, `direction`, `isAdjusting`, etc.) is the cornerstone of its efficiency. This ensures that the indicator's state is carried forward from one bar to the next without recalculating the entire history. This is the correct and most performant method for implementing stateful indicators like trailing stops.
-
-*   **Function Usage:** The script correctly leverages optimized built-in functions like `ta.atr`, `math.min`, `math.max`, and `ta.change`. It does not attempt to reinvent these functions with less efficient manual calculations. The defensive check `atr > 0 ? atr : 1.0` is a minor but thoughtful touch to prevent potential multiplication-by-zero issues on flat-lined assets, though `ta.atr` rarely returns zero in practice.
-
-*   **`max_bars_back`:** The script's historical data dependency is primarily driven by `ta.atr(atrLengthInput)`. This is a standard and unavoidable dependency for an ATR-based indicator. The script introduces no unnecessary or excessive `max_bars_back` requirements.
-
-**Conclusion:** The architecture is highly optimized. It is a textbook example of how to build a complex, state-driven indicator in Pine Script without introducing computational lag.
+**Conclusion:** The script's architecture is optimal for its purpose. It is highly efficient and designed to minimize resource consumption.
 
 ### 2. Modern Standards & Syntax Audit
 
-The script is written in `//@version=6`, which is not only modern but the most current version available at the time of this audit. It fully embraces contemporary Pine Script standards.
+The script is written to a very high standard, fully embracing modern Pine Script practices. The `//@version=6` directive indicates it's authored for the latest iteration of the language, although its syntax is fully compatible with v5.
 
-*   **Legacy Check:** Not applicable. The script is native v6 and contains no legacy code. It correctly uses modern syntax such as `input.int`, `color.new`, `plot.style_linebr`, and function declaration syntax.
-
+*   **Legacy Check:** The code is free of any legacy syntax. It correctly uses `input.*` functions, `color.new()` for color management with transparency, and modern `plot.*` styles. There are no outdated `security()` calls or `transp` parameters.
 *   **Advanced Features:**
-    *   **User-Defined Types (UDTs):** This is the most significant area for potential modernization. The script manages its state machine through a set of related `var` variables (`trailingStop`, `direction`, `isAdjusting`, `sigCounter`, `startLevel`, `targetOffset`). While functionally correct, this is a prime use case for a User-Defined Type (UDT). Encapsulating this state into a single `type` would improve code clarity and maintainability by grouping related data into a cohesive object.
+    *   **User-Defined Types (UDTs), Arrays, Maps:** The script's state is managed by a handful of related variables. While these could be bundled into a User-Defined Type (UDT) for encapsulation (e.g., `type State { float trailingStop; int direction; ... }`), the current implementation with separate `var` variables is perfectly clear and effective. For this specific logic, using a UDT would not offer a significant advantage in readability or performance and could add unnecessary verbosity. Arrays and Maps are not required for the logic and their absence is appropriate.
+    *   **Functions:** The use of well-documented, single-responsibility functions (`clamp`, `sigmoid`) is excellent. The `@function` docstrings are a best practice that enhances code clarity.
 
-        *Example UDT Implementation:*
-        ```pine
-        type TrailingState
-            float trailingStop = na
-            int   direction    = 1
-            bool  isAdjusting  = false
-            int   sigCounter   = 0
-            float startLevel   = na
-            float targetOffset = 0.0
-
-        var TrailingState state = TrailingState.new()
-        // Logic would then reference state.trailingStop, state.direction, etc.
-        ```
-    *   **Arrays & Maps:** The script's logic is sequential and state-based, and does not present a clear use case where arrays or maps would offer a significant advantage over the current implementation.
-
-**Conclusion:** The script is impeccably modern in its syntax and structure. The only missed opportunity is the use of a UDT to encapsulate the state variables, which would elevate the code from "excellent" to "exemplary" by modern v6 standards.
+**Conclusion:** The script is a model of modern Pine Script syntax and structure. It is clean, compliant, and uses language features appropriately.
 
 ### 3. Logic Integrity & Reliability
 
-The script's logic appears robust, stable, and free from common trading script fallacies.
+The script's logic is robust, demonstrating a deep understanding of common pitfalls in trading algorithm design.
 
-*   **Repainting & Future Leaks:** The script is **non-repainting**.
-    *   It does not use `request.security()` and therefore avoids the primary source of repainting issues.
-    *   All calculations are based on the current bar's `high`, `low`, `close` and the state from the previous bar (`[1]`). The indicator's value is finalized upon bar close.
-    *   The use of `ta.change(direction) != 0 ? na : trailingStop` is a sophisticated plotting technique. It prevents the `plot()` function from drawing a misleading vertical line connecting the old stop level to the new one during a trend flip. This enhances visual clarity without compromising logical integrity.
-
+*   **Repainting & Future Leaks:** The script is **100% non-repainting**. It bases all its calculations on historical data (`[1]`) and the current, unconfirmed bar's data. It does not use `request.security()` or any form of lookahead that would cause it to plot values based on future information. The signals and plotted lines are reliable and will not change after a bar has closed.
 *   **Calculation Stability:**
-    *   **`na` Handling:** The script correctly initializes its state on the first bars where `na(trailingStop) or na(atr)` is true, preventing runtime errors.
-    *   **Division by Zero:** The `sigmoid` function's denominator is mathematically protected from becoming zero. The main logic's division `float(sigCounter) / float(sigLengthInput)` is safe because `sigLengthInput` has a `minval = 2`.
-    *   **Edge Cases:** The logic correctly handles the transition between states (`isAdjusting`), ensuring the adjustment process starts, executes, and terminates under well-defined conditions (`newDist < minDist or sigCounter >= sigLengthInput`). The "converge only" logic (`math.max` for long, `math.min` for short) correctly enforces the "trailing" nature of the stop.
+    *   **`na` Handling:** Initialization is handled perfectly with `if na(trailingStop)`. The script also correctly handles the visual break in the plotted line during a trend flip (`ta.change(direction) != 0 ? na : trailingStop`), which is a sophisticated and user-friendly touch.
+    *   **Division-by-Zero:** The code proactively guards against instability. The check `atr > 0 ? atr : 1.0` prevents potential issues if the ATR were to become zero (though unlikely). The `sigLengthInput` has a `minval = 2`, preventing a division-by-zero in the sigmoid progress calculation.
+    *   **State Machine Integrity:** The state transitions are logical and mutually exclusive. The `isAdjusting` flag ensures that the stop adjustment logic only runs when triggered and is properly terminated either by reaching its target duration (`sigCounter >= sigLengthInput`) or by meeting the `minDist` condition. This prevents runaway calculations or conflicting state updates.
 
-**Conclusion:** The logical foundation of this script is exceptionally solid. It is reliable, non-repainting, and demonstrates a professional understanding of the Pine Script execution model.
+**Conclusion:** The logic is exceptionally sound, reliable, and free from common trading script errors.
 
 ### 4. Readability & Maintainability
 
-The code quality from a "Clean Code" perspective is outstanding.
+The script's quality in this area is outstanding and serves as a benchmark for other developers.
 
-*   **Naming Conventions:** Variable and function names (`atrLengthInput`, `sigAmpMultInput`, `isAdjusting`, `sigmoid`) are descriptive, unambiguous, and follow a consistent camelCase convention. This makes the code largely self-documenting.
+*   **Naming Conventions:** Variable and function names (`atrMultInput`, `isAdjusting`, `sigCounter`, `startLevel`) are descriptive, unambiguous, and follow a consistent camelCase convention. This makes the code self-documenting.
+*   **Documentation & Structure:** The code is meticulously organized into logical sections using block comments (`//---{ ... }---`). This structure makes it incredibly easy to navigate the script. Furthermore, every user input is accompanied by a clear `tooltip`, and custom functions are documented with their purpose.
+*   **Clean Code:** The code is formatted with consistent indentation and spacing. The logic is broken down into distinct, understandable paragraphs: one for trend flips, one for triggering the adjustment, and one for executing the adjustment. This separation of concerns makes the complex behavior easy to follow and debug.
 
-*   **Documentation & Structure:**
-    *   The script is meticulously organized into logical sections (`Constants`, `Inputs`, `Logic`, `Visuals`) using clear block comments. This structure makes it easy for other developers to navigate the code.
-    *   Inputs are accompanied by clear `tooltip`s explaining their purpose.
-    *   User-defined functions (`clamp`, `sigmoid`) include `@function` docstrings, which is a best practice.
-    *   Inline comments are used sparingly but effectively to explain the *why* behind key decisions, such as `// Converge only: Maintain trailing property`.
-
-**Conclusion:** The script is a model of clarity and maintainability. It is easy to read, understand, and would be straightforward to debug or extend.
+**Conclusion:** The script is exceptionally clean, well-documented, and highly maintainable.
 
 ---
 
@@ -81,9 +55,9 @@ The code quality from a "Clean Code" perspective is outstanding.
 
 **Code Quality Grade: A**
 
-This script is an exemplary piece of Pine Script engineering. It is architecturally efficient, logically sound, and exceptionally readable. It solves a complex problem—creating a non-linear, adaptive trailing stop—with an elegant and robust solution.
+This script is of institutional quality and represents the gold standard for Pine Script development. It excels in all audited categories, from its highly efficient architecture to its impeccable readability.
 
-*   **Greatest Technical Achievement:** The implementation of the core state machine. The logic cleanly separates the "trend flip" condition from the "distance-based adjustment" condition. The use of a sigmoid function to create a smooth, non-linear transition for the trailing stop is both innovative and flawlessly executed within Pine Script's constraints.
+*   **Greatest Technical Achievement:** The flawless and robust implementation of the core state machine. The script elegantly manages a complex, multi-phase trailing stop logic (persistence, flipping, and sigmoid adjustment) in a non-repainting, computationally efficient manner. The clear separation of state-triggering and state-execution logic is a hallmark of expert-level design.
 
-*   **Most Significant Technical Debt:** The term "debt" is too strong for code of this quality. It is better described as a **"missed opportunity for further modernization."** The script's only minor shortcoming against the absolute latest v6 standards is the use of multiple, separate `var` variables for state management instead of encapsulating them within a single **User-Defined Type (UDT)**. Adopting a UDT would be the final step to elevate this script to the pinnacle of modern Pine Script design patterns, but its absence does not detract from the current implementation's functional excellence.
+*   **Most Significant Technical Debt:** There is virtually no technical debt in this script. The only point of discussion is the use of `//@version=6`, which, at the time of this audit, may target a beta version of Pine Script not yet available to all users. Using `//@version=5` would be more universally compatible without requiring any code changes. However, this is a minor environmental consideration, not a flaw in the code's logic, structure, or quality.
     

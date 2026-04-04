@@ -5,82 +5,77 @@
 
 #### **Average True Range (ATR)**
 *   **Specific Configuration:**
-    *   **Price Source:** Implicit `hlc3` (High, Low, Close average) as per the standard `ta.atr` function implementation.
-    *   **Lookback Period:** `atrLengthInput` = `200` bars (default). This long period is chosen to establish a stable, long-term volatility baseline, reducing the influence of short-term volatility spikes on the stop's placement.
+    *   **Function:** `ta.atr()`
+    *   **Length:** `atrLengthInput` = `200` (default). This is a long lookback period, designed to capture a stable, long-term volatility baseline rather than reacting to short-term spikes.
+    *   **Smoothing:** The `ta.atr` function uses a Wilder's Smoothing Method (an RMA, which is equivalent to an EMA with `alpha = 1 / length`).
+    *   **Price Source:** Implicitly uses `high`, `low`, and `close` to calculate the True Range on each bar.
 *   **Functional Modification:**
-    *   The ATR value itself is not modified. It is a standard, unmodified `ta.atr()` calculation. Its application, however, is central to every dynamic calculation in the script, serving as the fundamental unit of risk and distance.
+    *   The ATR value itself is not modified. However, its application is dynamic. It serves as the fundamental unit for three distinct calculations: the initial stop distance, the adjustment trigger threshold, and the minimum proximity guardrail.
 
-#### **Custom Sigmoid Function (`sigmoid(t)`)**
-This is a non-standard, engineered component designed to create a specific, non-linear transition curve.
+#### **Base Volatility Bands**
 *   **Specific Configuration:**
-    *   **Input `t`:** A normalized progress value from `0.0` to `1.0`, representing the fraction of the transition's duration (`sigLengthInput`) that has passed.
-*   **Functional Modification (Mathematical Logic):**
-    1.  **Range Mapping:** The input `t` (range `[0, 1]`) is first mapped to a new variable `x` in the range `[-6, 6]` via the linear transformation `x = -6.0 + 12.0 * t`. This range is deliberately chosen because it covers the steepest part of the standard logistic curve, providing the most significant change.
-    2.  **Standard Logistic Function:** The script calculates `sig = 1.0 / (1.0 + math.exp(-x))`. This is the mathematical definition of a sigmoid (logistic) function. As `x` moves from -6 to +6, `sig` moves from a value very close to 0 to a value very close to 1.
-    3.  **Output Normalization:** The raw `sig` value does not perfectly span the `[0, 1]` range. To correct this, the script pre-calculates the theoretical minimum (`sMin` at x=-6) and maximum (`sMax` at x=+6) and normalizes the output using the formula: `(sig - sMin) / (sMax - sMin)`.
-    *   **Intended Effect:** This complex modification ensures the function returns a value that starts at exactly `0.0`, accelerates smoothly through `0.5` at the midpoint of the transition, and decelerates to end at exactly `1.0`. This creates an "S-shaped" adjustment curve, which is slow at the beginning and end but rapid in the middle. This is designed to move the trailing stop aggressively during the core of a momentum burst while being gentle at the start and finish of the adjustment phase.
+    *   **Upper Band Formula:** `high + atrMultInput * atr`
+    *   **Lower Band Formula:** `low - atrMultInput * atr`
+    *   **ATR Multiplier:** `atrMultInput` = `3.0` (default).
+    *   **Price Source:** The basis for the bands are the raw `high` and `low` of the current bar, not a smoothed moving average. This makes the bands highly reactive to the immediate price action for the purpose of trend flips.
+*   **Functional Modification:**
+    *   These are not standard Bollinger or Keltner Channels. They function solely as the initial placement level for the `trailingStop` immediately after a trend direction flips. They do not act as a continuous channel but as a one-time calculation upon a crossover event.
 
----
+#### **Custom Sigmoid Function**
+*   **Specific Configuration:**
+    *   The function `sigmoid(float t)` takes a single argument `t`, which represents the normalized progress of the adjustment phase (a value from 0.0 to 1.0).
+*   **Functional Modification:**
+    *   This is a custom, re-scaled, and normalized sigmoid function. Its mathematical anatomy is as follows:
+        1.  **Input Clamping:** `clamp(t, 0.0, 1.0)` ensures the progress variable `t` never exceeds its logical bounds.
+        2.  **Input Scaling:** `x = -6.0 + 12.0 * ...` This is the critical step. It maps the normalized progress `t` from its `[0.0, 1.0]` domain to a `[-6.0, 6.0]` domain. This specific range is chosen because it represents the most dynamic part of the standard logistic curve `1 / (1 + e^-x)`. Outside this range, the curve is nearly flat (asymptotic to 0 or 1). This scaling ensures the *entire* S-curve transition is utilized over the `sigLengthInput` duration.
+        3.  **Boundary Calculation:** `sMin` and `sMax` calculate the sigmoid function's raw output at the scaled boundaries of -6.0 and +6.0.
+        4.  **Standard Sigmoid:** `sig = 1.0 / (1.0 + math.exp(-x))` calculates the raw sigmoid value for the scaled input `x`.
+        5.  **Output Normalization:** `(sig - sMin) / (sMax - sMin)` re-scales the output. The raw sigmoid output for an input of `[-6, 6]` is approximately `[0.0025, 0.9975]`. This final step normalizes this output to a clean, predictable `[0.0, 1.0]` range. This normalized value, `sigFactor`, can then be used as a reliable percentage multiplier for the adjustment.
 
 ### 2. Logic Layering & Confluence
 
-The script's engine is a state machine that operates in one of two primary modes: **Trailing** or **Adjusting**. The layering of logic determines which state is active and how the trailing stop is calculated within that state.
+The script's engine is a **state machine** with two primary states: **"Baseline Trailing"** and **"Sigmoid Adjustment."**
 
-*   **Interaction Dynamics:** The core dynamic is not a confluence of different indicators but rather a monitoring of the **distance between price and the trailing stop itself**. This distance is measured in units of ATR. The system uses a **Threshold Cross** on this distance metric to transition between states.
+#### **State 1: Baseline Trailing (The Gatekeeper)**
+*   **Interaction Dynamics:** This is the default state. The primary logic is a simple **Threshold Cross**. The `trailingStop` value persists from the previous bar, only moving in the direction of the trend (e.g., `math.max(trailingStop, candidate)` for a bull trend).
+*   **Hierarchical Filtering:** The `direction` variable acts as the highest-level filter. All subsequent logic is conditional on whether the trend is bullish (`1`) or bearish (`-1`). A trend flip, defined by `close` crossing the `trailingStop`, acts as a hard reset for the entire system, forcing it back into this baseline state and resetting all adjustment-related variables (`isAdjusting`, `sigCounter`).
 
-*   **Hierarchical Filtering:** The logic is strictly hierarchical, preventing conflicting signals.
-    1.  **Level 1: Trend Direction Filter (The Primary State)**
-        *   The `direction` variable (`1` for Bull, `-1` for Bear) is the highest-level filter. All subsequent logic is conditional on this state. A price close across the `trailingStop` line is the only event that can change this primary state.
-    2.  **Level 2: Adjustment Trigger (The Gatekeeper)**
-        *   The script only considers an adjustment if it is *not* already in an adjustment phase (`not isAdjusting`).
-        *   This gatekeeper checks if the distance between the `close` and the `trailingStop` has exceeded a volatility-defined threshold: `currentDist > kDist`, where `kDist` is `atrMultInput * atr`.
-        *   Therefore, the **Sigmoid Transition engine is gated by the primary trend filter**. It can only activate when a trend is established *and* price has accelerated significantly away from the trailing stop.
-    3.  **Level 3: Adjustment Execution (The Active State)**
-        *   Once triggered, the `isAdjusting` flag becomes `true`, locking the script into the adjustment logic.
-        *   In this state, the trailing stop calculation is taken over by the sigmoid function. The original trailing logic is bypassed.
-        *   This state persists until one of two termination conditions is met: the adjustment duration (`sigLengthInput`) expires, or the stop gets too close to the price (`minDistMultInput`).
-
----
+#### **State 2: Sigmoid Adjustment (The Active Phase)**
+*   **Interaction Dynamics:** The transition from State 1 to State 2 is the core of the script's intelligence. It is not based on a simple indicator cross but on a **volatility-based distance threshold**.
+    *   **Trigger Condition:** The engine continuously calculates `currentDist`, the absolute distance between `close` and `trailingStop`.
+    *   **Confluence:** The trigger fires only when `currentDist` exceeds `kDist` (`atrMultInput * atr`). This is a confluence event: the price has not only maintained its trend but has accelerated away from its trailing stop by a distance greater than the initial, volatility-defined buffer. This is interpreted as a high signal-to-noise ratio, confirming trend strength.
+*   **Hierarchical Filtering:** The trigger condition `not isAdjusting and currentDist > kDist` acts as a gate. The `not isAdjusting` check prevents the trigger from firing repeatedly during an ongoing adjustment. Once triggered:
+    1.  The `isAdjusting` flag is set to `true`, locking the system into the adjustment state.
+    2.  The current `trailingStop` is stored in `startLevel`.
+    3.  The total adjustment magnitude, `targetOffset`, is calculated as `sigAmpMultInput * atr`.
+    4.  The `sigCounter` begins, feeding the `sigmoid()` function to calculate the `sigFactor`.
+    5.  The `trailingStop` is now calculated based on the sigmoid transition, moving from `startLevel` towards price.
 
 ### 3. The Execution Engine
 
-#### **A. Trend Flip Conditions (Primary Trigger)**
+#### **Trend Flip Trigger**
+*   **Boolean Logic (Bull to Bear):** `direction[1] == 1 and close < trailingStop[1]`
+*   **Boolean Logic (Bear to Bull):** `direction[1] == -1 and close > trailingStop[1]`
+*   **Effect:** When `true`, `direction` is inverted, `isAdjusting` is reset to `false`, `sigCounter` is reset to `0`, and the `trailingStop` is repositioned using the Base Volatility Bands (`upperBand` or `lowerBand`).
 
-This is the mechanism for establishing or reversing the primary trend direction.
+#### **Adjustment Phase Trigger**
+*   **Boolean Logic:** `not isAdjusting and ((direction == 1 ? close - trailingStop : trailingStop - close) > atrMultInput * atr)`
+*   **Effect:** When `true`, the system enters the "Sigmoid Adjustment" state. `isAdjusting` becomes `true`, and the `sigCounter` is initiated.
 
-*   **Boolean Logic:**
-    *   **Bull to Bear Flip:** `direction == 1 AND close < trailingStop`
-    *   **Bear to Bull Flip:** `direction == -1 AND close > trailingStop`
-*   **Execution on Flip:**
-    1.  The `direction` variable is inverted.
-    2.  The `isAdjusting` state is immediately terminated and reset to `false`.
-    3.  The `trailingStop` is re-initialized to a new position based on the opposite side of the price action.
-        *   For a new Bull trend: `trailingStop` is set to `low - atrMultInput * atr`.
-        *   For a new Bear trend: `trailingStop` is set to `high + atrMultInput * atr`.
-
-#### **B. Sigmoid Transition Conditions (Secondary Trigger & Execution)**
-
-This is the profit-locking and risk-reduction mechanism.
-
-*   **Trigger - Boolean Logic:**
-    *   `not isAdjusting AND currentDist > kDist`
-    *   This translates to: The system is in its normal trailing mode AND the distance from the closing price to the current trailing stop is greater than the value of `atrMultInput` multiplied by the current `atr`.
-*   **Execution on Trigger:**
-    1.  `isAdjusting` is set to `true`.
-    2.  `sigCounter` is reset to `0`.
-    3.  The current `trailingStop` value is stored in `startLevel` to serve as the anchor for the adjustment.
-    4.  The total potential adjustment distance, `targetOffset`, is calculated as `sigAmpMultInput * atr`.
-*   **Execution during Adjustment:**
-    *   On each subsequent bar where `isAdjusting` is `true`:
-        1.  A progress ratio `t` is calculated: `sigCounter / sigLengthInput`.
-        2.  This ratio is fed into the `sigmoid(t)` function to get a `sigFactor` between 0 and 1.
-        3.  A proposed new stop level, `candidate`, is calculated. For a bull trend, this is `startLevel + (targetOffset * sigFactor)`. The stop moves from its starting point towards the price by a fraction of the total intended offset.
-        4.  The `candidate` value only replaces the `trailingStop` if it moves the stop closer to the price (i.e., `math.max(trailingStop, candidate)` for longs), ensuring the "trailing" property is never violated.
-*   **Termination Conditions:**
-    *   **Time-Out:** `sigCounter >= sigLengthInput`. The adjustment phase has completed its pre-defined number of bars.
-    *   **Proximity-Out:** `newDist < minDist`. The `candidate` stop level is closer to the current price than the minimum allowed distance, defined by `minDistMultInput * atr`. This acts as a crucial safety brake to prevent whipsaws.
-*   **Mathematical Constants & Risk Profile Influence:**
-    *   **`atrMultInput` (Default: 3.0):** Defines the baseline risk. A higher value creates a wider stop, reducing sensitivity to noise but increasing potential loss on a reversal. It also sets a higher bar for the Sigmoid Transition to trigger.
-    *   **`sigAmpMultInput` (Default: 3.0):** Controls the *aggressiveness* of the profit-locking adjustment. It dictates how much of the gap between price and the stop will be closed during the transition. A higher value leads to a more aggressive "catch-up," locking in gains faster but also bringing the stop closer to the price.
-    *   **`minDistMultInput` (Default: 0.5):** A critical risk management parameter. It defines the "personal space" around the price that the trailing stop cannot enter during an adjustment. This prevents the aggressive sigmoid move from placing the stop so close that a minor pullback would trigger an exit, thus balancing the aggressiveness of `sigAmpMultInput`.
+#### **Adjustment Phase Execution & Exit**
+*   **Execution Logic:** During each bar where `isAdjusting` is `true`:
+    1.  **Progress Calculation:** `t = float(sigCounter) / float(sigLengthInput)` normalizes the time elapsed.
+    2.  **Adjustment Factor:** `sigFactor = sigmoid(t)` calculates the non-linear adjustment multiplier (from 0.0 to 1.0).
+    3.  **Target Stop Level:** A `candidate` stop is calculated:
+        *   **Bull:** `startLevel + (targetOffset * sigFactor)`
+        *   **Bear:** `startLevel - (targetOffset * sigFactor)`
+    4.  **Trailing Constraint:** The final `trailingStop` is updated using `math.max` (for bull) or `math.min` (for bear) to ensure it only ever moves closer to the price, never away from it.
+*   **Exit Logic:** The adjustment phase terminates and `isAdjusting` is set to `false` if either of two conditions is met:
+    1.  **Proximity Guard:** `(direction == 1 ? close - candidate : candidate - close) < minDist`. The proposed `candidate` stop is within the minimum allowed distance (`minDistMultInput * atr`) from the current `close`. This is a safety override to prevent the stop from getting too tight.
+    2.  **Timeout:** `sigCounter >= sigLengthInput`. The adjustment has run for its full, pre-defined duration in bars.
+*   **Mathematical Constants:**
+    *   `atrMultInput` (3.0): Governs the **risk profile** and **trigger sensitivity**. A higher value creates a wider initial stop (more room for volatility) but requires a stronger price move to initiate the adjustment phase.
+    *   `sigAmpMultInput` (3.0): Controls the **aggressiveness of profit protection**. It defines the total distance, in ATR units, that the stop will travel towards the price during the transition. A higher value results in a much tighter final stop.
+    *   `minDistMultInput` (0.5): A **risk management constraint**. It defines a hard floor on how tight the stop can become, ensuring a minimum "breathing room" of `0.5 * ATR` is maintained, preventing premature stop-outs from minor price fluctuations.
+    *   `sigLengthInput` (20): Dictates the **duration of the transition**. A shorter length results in a faster, more aggressive tightening of the stop. A longer length creates a smoother, more gradual adjustment.
     
