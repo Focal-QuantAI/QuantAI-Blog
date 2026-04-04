@@ -1,7 +1,7 @@
 
-    # Indicators to Strategy Blueprint
+# Indicators to Strategy Blueprint
 
-    Based on the provided `indicator` script, here is the architectural blueprint for its transformation into a production-ready, automated execution framework.
+Based on the provided `indicator` script, here is the architectural blueprint for its transformation into a production-ready, automated execution framework.
 
 ### 1. Execution Triggers (Entry & Direction)
 

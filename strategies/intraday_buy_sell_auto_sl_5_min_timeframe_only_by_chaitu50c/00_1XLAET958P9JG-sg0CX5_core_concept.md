@@ -1,7 +1,7 @@
 
-    # Core Concept
+# Core Concept
 
-    ### 1. The Market Philosophy
+### 1. The Market Philosophy
 
 This strategy operates on a **Momentum** philosophy, specifically designed to capture the inception of new intraday trends. Its core thesis is that a failed reversal attempt, confirmed by a decisive breakout, signals a powerful shift in market sentiment and the beginning of a directional move. The script is not chasing existing trends but rather identifying the precise moment of trend birth following a period of conflict between buyers and sellers. The underlying principle is that the exhaustion of one side (e.g., sellers failing to push prices lower) followed by an aggressive counter-attack (buyers breaking a recent high) provides a high-probability entry point to ride the subsequent wave of momentum. This approach seeks to generate alpha by entering before the new trend is obvious to the broader market.
 

@@ -1,7 +1,7 @@
 
-    # Indicators to Strategy Blueprint
+# Indicators to Strategy Blueprint
 
-    Based on the provided `RSI Elite Toolkit`, which currently operates as a sophisticated `indicator`, we will architect a production-ready `strategy` framework. The existing logic, particularly the confluence-based signal generation, provides a strong foundation. Our focus will be on transforming its visual trade simulations into a robust, backtestable, and automated execution engine.
+Based on the provided `RSI Elite Toolkit`, which currently operates as a sophisticated `indicator`, we will architect a production-ready `strategy` framework. The existing logic, particularly the confluence-based signal generation, provides a strong foundation. Our focus will be on transforming its visual trade simulations into a robust, backtestable, and automated execution engine.
 
 ### 1. Execution Triggers (Entry & Direction)
 

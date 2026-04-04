@@ -1,5 +1,4 @@
 
-    # Code Quality Analysis
+# Code Quality Analysis
 
-    
-    
+

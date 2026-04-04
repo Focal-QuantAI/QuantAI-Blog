@@ -1,7 +1,7 @@
 
-    # Improvement Suggestions
+# Improvement Suggestions
 
-    Here is a roadmap for evolving the provided Pine Script into a professional-grade trading system, structured across three additive levels of enhancement.
+Here is a roadmap for evolving the provided Pine Script into a professional-grade trading system, structured across three additive levels of enhancement.
 
 ---
 

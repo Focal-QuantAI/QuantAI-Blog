@@ -1,7 +1,7 @@
 
-    # Improvement Suggestions
+# Improvement Suggestions
 
-    Here is a roadmap for evolving the "BTC Delta MTF v3" script into a professional-grade, automated trading system, structured in three additive levels.
+Here is a roadmap for evolving the "BTC Delta MTF v3" script into a professional-grade, automated trading system, structured in three additive levels.
 
 ---
 

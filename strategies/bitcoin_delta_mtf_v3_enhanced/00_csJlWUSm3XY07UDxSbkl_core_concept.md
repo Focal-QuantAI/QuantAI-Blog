@@ -1,7 +1,7 @@
 
-    # Core Concept
+# Core Concept
 
-    ### 1. The Market Philosophy
+### 1. The Market Philosophy
 
 This script operates on a sophisticated **Order Flow Imbalance** philosophy. It is a hybrid model designed to capture alpha from both **Momentum** and **Mean Reversion** scenarios. The core thesis is that the "footprints" of institutional capital are visible in the relationship between price, volume, and delta (net buying/selling pressure). The strategy aims to identify moments of either overwhelming, trend-aligned order flow (Momentum) or significant divergence between price action and underlying flow, which signals participant exhaustion and an impending reversal (Mean Reversion). It profits by detecting when aggressive market participants are either firmly in control or are being absorbed by passive, larger players, creating high-probability inflection points.
 

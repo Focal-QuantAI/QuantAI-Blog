@@ -1,7 +1,7 @@
 
-    # Pros and Cons
+# Pros and Cons
 
-    As a Senior Risk Manager and Quantitative Strategist, this is my formal risk assessment of the provided Pine Script logic. This analysis is designed to be a rigorous and unbiased evaluation of the strategy's viability as a tradable system.
+As a Senior Risk Manager and Quantitative Strategist, this is my formal risk assessment of the provided Pine Script logic. This analysis is designed to be a rigorous and unbiased evaluation of the strategy's viability as a tradable system.
 
 ---
 
@@ -34,13 +34,13 @@ Despite its clever design, the strategy possesses significant and potentially fa
 
 ### 3. The Quantitative Reality (Pros vs. Cons)
 
-| Aspect | Pro (The Edge) | Con (The Friction) |
-| :--- | :--- | :--- |
-| **Signal Quality** | High specificity due to strict time, pattern, and breakout filters. Aims for high-probability setups. | Low frequency. May miss many profitable trends that do not fit the exact pattern. |
-| **Risk Management** | Structurally sound, volatility-adjusted stop-loss based on the pattern's own range. | **No take-profit logic.** This makes the system incomplete and untestable. The R:R is undefined. |
-| **Robustness** | No repainting. Logic is clean and based on closed-bar data. | **High risk of curve-fitting.** The hard-coded `5/15/3` parameters are rigid and unlikely to be universal. |
-| **Edge Persistence** | **Low.** The strategy's hyper-specific nature makes it unlikely to be profitable across different asset classes or market regimes without significant re-optimization. | Highly dependent on a specific type of market volatility (range contraction followed by expansion). |
-| **Execution Friction** | Low trade frequency means commission costs may be manageable. | **Highly sensitive to slippage.** The tight, pattern-defined stop means even minor slippage on entry can dramatically worsen the trade's R:R profile. |
+| Aspect                 | Pro (The Edge)                                                                                                                                                         | Con (The Friction)                                                                                                                                    |
+| :--------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Signal Quality**     | High specificity due to strict time, pattern, and breakout filters. Aims for high-probability setups.                                                                  | Low frequency. May miss many profitable trends that do not fit the exact pattern.                                                                     |
+| **Risk Management**    | Structurally sound, volatility-adjusted stop-loss based on the pattern's own range.                                                                                    | **No take-profit logic.** This makes the system incomplete and untestable. The R:R is undefined.                                                      |
+| **Robustness**         | No repainting. Logic is clean and based on closed-bar data.                                                                                                            | **High risk of curve-fitting.** The hard-coded `5/15/3` parameters are rigid and unlikely to be universal.                                            |
+| **Edge Persistence**   | **Low.** The strategy's hyper-specific nature makes it unlikely to be profitable across different asset classes or market regimes without significant re-optimization. | Highly dependent on a specific type of market volatility (range contraction followed by expansion).                                                   |
+| **Execution Friction** | Low trade frequency means commission costs may be manageable.                                                                                                          | **Highly sensitive to slippage.** The tight, pattern-defined stop means even minor slippage on entry can dramatically worsen the trade's R:R profile. |
 
 ### 4. Psychological Profile & Expectation Management
 

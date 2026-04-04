@@ -1,7 +1,7 @@
 
-    # Pros and Cons
+# Pros and Cons
 
-    Here is the requested SWOT analysis and psychological risk assessment.
+Here is the requested SWOT analysis and psychological risk assessment.
 
 ***
 

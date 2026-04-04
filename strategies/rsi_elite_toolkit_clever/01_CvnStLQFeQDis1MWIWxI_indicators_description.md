@@ -1,11 +1,12 @@
 
-    # Indicators Description
+# Indicators Description
 
-    ### 1. Component Deconstruction
+### 1. Component Deconstruction
 
 This section deconstructs the individual mathematical and logical components that form the foundation of the `RSI Elite Toolkit`.
 
 #### **Relative Strength Index (RSI)**
+
 *   **Specific Configuration:**
     *   **Price Source:** `input.source(close, "RSI Source")` - Defaults to the bar's closing price.
     *   **Length:** `input.int(21, "RSI Period")` - A lookback period of 21 bars, slightly longer than the common 14-period default, aiming to smooth the oscillator and focus on more established momentum shifts.
@@ -14,6 +15,7 @@ This section deconstructs the individual mathematical and logical components tha
     *   **Non-Repainting MTF Engine:** The script's primary modification is its Multi-Timeframe (MTF) capability. When `enable_mtf` is true, it uses `request.security()` to fetch the RSI value from a higher timeframe (`mtf_timeframe`). Crucially, it employs `barmerge.lookahead_off` to prevent the engine from using future data, ensuring the signals are non-repainting and historically accurate.
 
 #### **RSI Signal Smoothing (Moving Average of RSI)**
+
 *   **Specific Configuration:**
     *   **Type:** `input.string("SMA", "Smoothing Type", options = ["SMA", "EMA", "WMA", "RMA"])` - A user-selectable moving average type, defaulting to a Simple Moving Average (SMA).
     *   **Length:** `input.int(14, "Smoothing Period")` - A 14-period lookback.
@@ -21,6 +23,7 @@ This section deconstructs the individual mathematical and logical components tha
     *   This is not a moving average of price, but a moving average of the `rsi_val` itself. Its purpose is to act as a "signal line" for the RSI oscillator. The mathematical effect is a second layer of smoothing applied to the momentum calculation. Crossovers between the RSI and its own moving average are used to generate signals with reduced lag compared to price crossing a moving average, but with a better signal-to-noise ratio than raw RSI threshold crosses.
 
 #### **Institutional Bias Filter (Exponential Moving Average)**
+
 *   **Specific Configuration:**
     *   **Price Source:** Hard-coded to `close`.
     *   **Length:** `input.int(200, "Bias Period")` - A fixed 200-period EMA.
@@ -28,16 +31,19 @@ This section deconstructs the individual mathematical and logical components tha
     *   This is a standard 200 EMA applied to the main chart's price. It is not mathematically modified. Its function is purely contextual, serving as a binary filter to define the macro market structure (Bullish if `close > 200 EMA`, Bearish if `close < 200 EMA`).
 
 #### **Volatility Matrix (Average True Range - ATR)**
+
 *   **Specific Configuration:**
     *   **Length:** `input.int(14, "Volatility Matrix (ATR)")` - A standard 14-period ATR.
 *   **Functional Modification:**
     *   This is a standard ATR calculation. It is not used as a signal generator but as a core component of the risk management engine. Its value provides a dynamic, volatility-adjusted unit of measurement for calculating Stop Loss and Take Profit distances.
 
 #### **Divergence Intelligence Engine**
+
 *   **Specific Configuration:**
     *   **Pivot Lookback:** `div_pivot_left` (5 bars), `div_pivot_right` (5 bars) - Defines the window for identifying a pivot high/low on the RSI. A pivot low, for example, is a point where the RSI is lower than the 5 bars before it and the 5 bars after it.
     *   **Analysis Range:** `div_max_range` (60 bars), `div_min_range` (5 bars) - Constrains the search for a previous pivot. A divergence is only considered valid if the distance between the two pivots is between 5 and 60 bars.
 *   **Functional Modification:**
+
     *   This is a custom-built logical engine, not a standard indicator. Its mechanics are as follows:
         1.  **Pivot Identification:** It uses `ta.pivotlow()` and `ta.pivothigh()` on the `rsi_val` to locate significant turning points in momentum.
         2.  **State Capture:** Upon finding a pivot, `ta.valuewhen()` is used to capture the RSI value and the corresponding `low` or `high` price at that exact bar. It stores both the most recent pivot (`[0]`) and the one prior (`[1]`).
@@ -72,6 +78,7 @@ A signal is generated only when the cumulative `long_score` or `short_score` mee
 *   The script also includes a state machine (`var int active_state`) which prevents new signals from being generated while a trade visualization is already active on the chart (`active_state != 0`). A new signal can only trigger if `active_state == 0`.
 
 #### **Exit Conditions & Mathematical Constants**
+
 The script does not generate dynamic exit signals. Instead, it projects a static Stop Loss (SL) and Take Profit (TP) zone based on volatility at the time of the trigger.
 
 *   **Mathematical Constants:**

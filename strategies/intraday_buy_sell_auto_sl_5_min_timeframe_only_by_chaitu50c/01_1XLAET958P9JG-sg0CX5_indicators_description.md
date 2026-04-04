@@ -1,7 +1,7 @@
 
-    # Indicators Description
+# Indicators Description
 
-    ### 1. Component Deconstruction
+### 1. Component Deconstruction
 
 The script's engine is built exclusively on raw price and time data, eschewing traditional lagging indicators for a pure price action approach.
 

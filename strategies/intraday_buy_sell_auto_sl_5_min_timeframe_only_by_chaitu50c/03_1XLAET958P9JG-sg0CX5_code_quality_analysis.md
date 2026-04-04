@@ -1,7 +1,7 @@
 
-    # Code Quality Analysis
+# Code Quality Analysis
 
-    ### Technical Audit: Intraday BUY/SELL & AUTO SL
+### Technical Audit: Intraday BUY/SELL & AUTO SL
 
 This audit provides a deep-dive technical analysis of the provided Pine Script code, evaluating its architecture, syntax, logic, and maintainability against modern v5/v6 standards.
 

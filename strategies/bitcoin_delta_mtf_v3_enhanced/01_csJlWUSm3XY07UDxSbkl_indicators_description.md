@@ -1,7 +1,7 @@
 
-    # Indicators Description
+# Indicators Description
 
-    ### 1. Component Deconstruction
+### 1. Component Deconstruction
 
 This section deconstructs the individual mathematical and logical components that form the foundation of the script's analysis engine.
 

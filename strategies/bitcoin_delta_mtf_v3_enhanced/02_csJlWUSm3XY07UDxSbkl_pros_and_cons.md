@@ -1,7 +1,7 @@
 
-    # Pros and Cons
+# Pros and Cons
 
-    As a Senior Risk Manager and Quantitative Strategist, I have performed a comprehensive audit of the "BTC Delta MTF v3 — Enhanced" Pine Script. The following analysis dissects the strategy's architecture, quantifies its inherent risks, and provides actionable recommendations for capital preservation and expectation management.
+As a Senior Risk Manager and Quantitative Strategist, I have performed a comprehensive audit of the "BTC Delta MTF v3 — Enhanced" Pine Script. The following analysis dissects the strategy's architecture, quantifies its inherent risks, and provides actionable recommendations for capital preservation and expectation management.
 
 ---
 
@@ -31,13 +31,13 @@ Despite its conceptual sophistication, the script possesses severe vulnerabiliti
 
 ### 3. The Quantitative Reality (Pros vs. Cons)
 
-| Feature | Pro (The Edge) | Con (The Drag) |
-| :--- | :--- | :--- |
-| **Conceptual Basis** | Based on legitimate market microstructure principles (Order Flow, Absorption, VWAP), which are a known source of alpha. | The implementation is overly complex, with dozens of parameters and arbitrary weights (`conf := _wScore * 0.25 + ...`), creating a high risk of **curve-fitting**. |
-| **Signal Generation** | The hierarchical veto system (`absVeto`, `dvVeto`) is a sophisticated filter that can prevent trades into obvious traps. | **CRITICAL:** The use of `lookahead_on` means signals repaint. Historical performance is not representative of live results, creating a massive gap between perceived and actual Sharpe Ratio. |
-| **Edge Persistence** | The core concepts (delta, absorption) are asset-agnostic. It is most likely to persist in **high-volume, centrally-cleared markets** like Crypto futures (BTC, ETH) and Equity Index futures (ES, NQ). | Its effectiveness in decentralized or low-volume markets (many Forex pairs, illiquid stocks) is highly questionable, as the volume and delta data may be unreliable or unrepresentative. |
-| **Execution Friction** | The `timePressure` variable attempts to systematize entry timing by waiting until late in the candle. | The strategy is inherently high-frequency. It will be extremely sensitive to **slippage and commissions**. A signal at 80% of a 5-min bar leaves only 60 seconds for execution, where price can move significantly, eroding the theoretical edge. |
-| **Adaptability** | The dynamic weighting of delta based on its ratio to an SMA (`_fH`, `_fL`) allows the model to adapt its sensitivity to changing volatility. | The sheer number of inputs makes optimization a daunting task and increases the likelihood of creating a model that is perfectly tuned to the past but fails in the future (**path dependency**). |
+| Feature                | Pro (The Edge)                                                                                                                                                                                         | Con (The Drag)                                                                                                                                                                                                                                    |
+| :--------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Conceptual Basis**   | Based on legitimate market microstructure principles (Order Flow, Absorption, VWAP), which are a known source of alpha.                                                                                | The implementation is overly complex, with dozens of parameters and arbitrary weights (`conf := _wScore * 0.25 + ...`), creating a high risk of **curve-fitting**.                                                                                |
+| **Signal Generation**  | The hierarchical veto system (`absVeto`, `dvVeto`) is a sophisticated filter that can prevent trades into obvious traps.                                                                               | **CRITICAL:** The use of `lookahead_on` means signals repaint. Historical performance is not representative of live results, creating a massive gap between perceived and actual Sharpe Ratio.                                                    |
+| **Edge Persistence**   | The core concepts (delta, absorption) are asset-agnostic. It is most likely to persist in **high-volume, centrally-cleared markets** like Crypto futures (BTC, ETH) and Equity Index futures (ES, NQ). | Its effectiveness in decentralized or low-volume markets (many Forex pairs, illiquid stocks) is highly questionable, as the volume and delta data may be unreliable or unrepresentative.                                                          |
+| **Execution Friction** | The `timePressure` variable attempts to systematize entry timing by waiting until late in the candle.                                                                                                  | The strategy is inherently high-frequency. It will be extremely sensitive to **slippage and commissions**. A signal at 80% of a 5-min bar leaves only 60 seconds for execution, where price can move significantly, eroding the theoretical edge. |
+| **Adaptability**       | The dynamic weighting of delta based on its ratio to an SMA (`_fH`, `_fL`) allows the model to adapt its sensitivity to changing volatility.                                                           | The sheer number of inputs makes optimization a daunting task and increases the likelihood of creating a model that is perfectly tuned to the past but fails in the future (**path dependency**).                                                 |
 
 ### 4. Psychological Profile & Expectation Management
 

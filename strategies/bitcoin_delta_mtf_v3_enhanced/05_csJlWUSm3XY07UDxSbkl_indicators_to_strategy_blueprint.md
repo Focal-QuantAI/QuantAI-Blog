@@ -1,7 +1,7 @@
 
-    # Indicators to Strategy Blueprint
+# Indicators to Strategy Blueprint
 
-    This `indicator` is a sophisticated piece of real-time analysis, leveraging lower timeframe data to build a high-confidence picture of market dynamics within a single candle. However, its reliance on `lookahead` and `security_lower_tf` makes it a classic "chart painter" that is notoriously difficult to automate. To transform this into a professional execution framework, we must shift focus from the beautiful, repainting dashboard to a set of discrete, non-repainting, and actionable rules.
+This `indicator` is a sophisticated piece of real-time analysis, leveraging lower timeframe data to build a high-confidence picture of market dynamics within a single candle. However, its reliance on `lookahead` and `security_lower_tf` makes it a classic "chart painter" that is notoriously difficult to automate. To transform this into a professional execution framework, we must shift focus from the beautiful, repainting dashboard to a set of discrete, non-repainting, and actionable rules.
 
 The core philosophy is to **wait for confirmation**. The script's own `timePressure` and `_nxtActive` variables are the key. They acknowledge that the rich intra-bar data is only reliable in the final moments of a candle's life. Our strategy will formalize this concept.
 
