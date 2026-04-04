@@ -1,0 +1,141 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=6
+indicator("Sigmoid Transition Trailing Stop [LuxAlgo]", "LuxAlgo - Sigmoid Transition Trailing Stop", overlay = true)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Constants
+//---------------------------------------------------------------------------------------------------------------------{
+COLOR_BULL = #089981
+COLOR_BEAR = #f23645
+TRANSP_90  = 90
+TRANSP_70  = 70
+TRANSP_50  = 50
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Inputs
+//---------------------------------------------------------------------------------------------------------------------{
+atrLengthInput   = input.int(200,   "ATR Length",                  minval = 1,                 tooltip = "ATR lookback period.")
+atrMultInput     = input.float(3.0, "ATR Multiplier",              minval = 0.1, step = 0.1,   tooltip = "Initial distance when the trend flips.")
+sigLengthInput   = input.int(20,    "Sigmoid Length (Bars)",       minval = 2,                 tooltip = "Bars to complete the transition.")
+sigAmpMultInput  = input.float(3.0, "Sigmoid Amplitude (ATR Units)",minval = 0.1, step = 0.1,   tooltip = "How much closer to price the TS moves during transition.")
+minDistMultInput = input.float(0.5, "Min Distance (ATR Units)",    minval = 0.0, step = 0.1,   tooltip = "Adjustment halts if TS gets within this distance of price.")
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Functions
+//---------------------------------------------------------------------------------------------------------------------{
+// @function Returns a value clamped between a minimum and maximum.
+clamp(float val, float low, float high) => 
+    math.min(math.max(val, low), high)
+
+// @function Returns a sigmoid transition value (0..1) based on progress 't'.
+sigmoid(float t) =>
+    float x    = -6.0 + 12.0 * clamp(t, 0.0, 1.0)
+    float sMin = 1.0 / (1.0 + math.exp(6.0))
+    float sMax = 1.0 / (1.0 + math.exp(-6.0))
+    float sig  = 1.0 / (1.0 + math.exp(-x))
+    (sig - sMin) / (sMax - sMin)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Logic
+//---------------------------------------------------------------------------------------------------------------------{
+float atr = ta.atr(atrLengthInput)
+
+// State Tracking
+var float trailingStop = na
+var int   direction    = 1 // 1: Bull, -1: Bear
+var bool  isAdjusting  = false
+var int   sigCounter   = 0
+var float startLevel   = na
+var float targetOffset = 0.0
+
+// Base Bands (only used for flips)
+float upperBand = high + atrMultInput * atr
+float lowerBand = low - atrMultInput * atr
+
+// Flip and Basic Persistence
+if na(trailingStop) or na(atr)
+    trailingStop := direction == 1 ? lowerBand : upperBand
+else
+    if direction == 1
+        if close < trailingStop
+            direction    := -1
+            trailingStop := upperBand
+            isAdjusting  := false
+            sigCounter   := 0
+    else
+        if close > trailingStop
+            direction    := 1
+            trailingStop := lowerBand
+            isAdjusting  := false
+            sigCounter   := 0
+
+// Adjustment Trigger
+float currentDist = direction == 1 ? close - trailingStop : trailingStop - close
+float kDist       = atrMultInput * (atr > 0 ? atr : 1.0)
+float minDist     = minDistMultInput * (atr > 0 ? atr : 1.0)
+
+// Start sigmoid transition if price-to-stop gap becomes too wide
+if not isAdjusting and currentDist > kDist
+    isAdjusting  := true
+    sigCounter   := 0
+    startLevel   := trailingStop
+    targetOffset := sigAmpMultInput * atr
+
+// Adjustment execution
+if isAdjusting
+    sigCounter += 1
+    
+    // Normalized progress (0 to 1)
+    float t         = float(sigCounter) / float(sigLengthInput)
+    float sigFactor = sigmoid(t)
+    
+    // Position candidate: starts at 'startLevel' and moves towards price by 'targetOffset'
+    float adjustment = targetOffset * sigFactor
+    float candidate  = direction == 1 ? startLevel + adjustment : startLevel - adjustment
+    
+    // Distance check to prevent stop getting too close
+    float newDist = direction == 1 ? close - candidate : candidate - close
+    
+    if newDist < minDist or sigCounter >= sigLengthInput
+        isAdjusting := false
+    else
+        // Converge only: Maintain trailing property (only move closer to price)
+        if direction == 1
+            trailingStop := math.max(trailingStop, candidate)
+        else
+            trailingStop := math.min(trailingStop, candidate)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Visuals
+//---------------------------------------------------------------------------------------------------------------------{
+// Dynamic transparency logic: solid if adjusting, else more transparent
+int tsTransparency = isAdjusting ? 0 : TRANSP_70
+color tsColor      = color.new(direction == 1 ? COLOR_BULL : COLOR_BEAR, tsTransparency)
+
+// Clear cuts on crossing: return na when direction changes
+float plotTS = ta.change(direction) != 0 ? na : trailingStop
+
+// Main Trailing Stop Plot
+tsPlotId = plot(plotTS, "Trailing Stop", tsColor, 2, plot.style_linebr)
+
+// Dots on Crossings
+bool isFlip = ta.change(direction) != 0
+plot(isFlip ? trailingStop : na, "Trend Change Dot", color.new(direction == 1 ? COLOR_BULL : COLOR_BEAR, 0), 4, plot.style_circles, join = false)
+
+// Fill Plot
+pricePlotId = plot(close, "Price Plot", color.new(chart.fg_color, 100))
+fill(tsPlotId, pricePlotId, 
+     direction == 1 ? trailingStop : close, direction == 1 ? close : trailingStop, 
+     direction == 1 ? color.new(COLOR_BULL, TRANSP_90) : color.new(COLOR_BEAR, TRANSP_50), 
+     direction == 1 ? color.new(COLOR_BULL, TRANSP_50) : color.new(COLOR_BEAR, TRANSP_90), 
+     title = "Stop Fill")
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Alerts
+//---------------------------------------------------------------------------------------------------------------------{
+alertcondition(direction != direction[1], "Flip", "Direction Changed")
+alertcondition(isAdjusting and not isAdjusting[1], "Adjustment Start", "Transition Triggered")
+
+//---------------------------------------------------------------------------------------------------------------------}
