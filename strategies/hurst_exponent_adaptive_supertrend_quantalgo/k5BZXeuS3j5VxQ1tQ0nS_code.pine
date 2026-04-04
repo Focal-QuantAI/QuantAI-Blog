@@ -1,0 +1,154 @@
+// This script is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © QuantAlgo
+
+//@version=6
+indicator("Hurst Exponent Adaptive Supertrend [QuantAlgo]", overlay=true)
+
+//              ╔════════════════════════════════╗              //
+//              ║      USER-DEFINED SETTINGS     ║              //
+//              ╚════════════════════════════════╝              //
+
+var string Preset_Settings     = '═════════ Preset Configuration ═════════'
+var string Hurst_Settings      = '═════════ Hurst Exponent ═════════'
+var string Kalman_Settings     = '═════════ Kalman Smoother ═════════'
+var string Band_Settings       = '═════════ Trend Band ═════════'
+var string Appearance_Settings = '═════════ Appearance Settings ═════════'
+
+tooltipPreset       = 'Select a predefined configuration optimised for different trading styles and timeframes. Presets override all Hurst, Kalman, and Band settings.\n\nDefault (H Period 60, Lag 10, Gain 0.20, ATR 10, Base 1.5, Scale 3.0): Balanced configuration for swing trading on 4H and daily charts.\n\nFast Response (H Period 40, Lag 5, Gain 0.35, ATR 7, Base 1.0, Scale 2.0): Aggressive configuration for intraday trading on 5min to 1H charts. Higher Kalman gain and tighter bands react quickly to momentum shifts.\n\nSmooth Trend (H Period 80, Lag 15, Gain 0.10, ATR 14, Base 2.0, Scale 4.0): Conservative configuration for position trading on daily and weekly charts. Slower Kalman tracking and wider bands only confirm major trend changes.'
+tooltipHPeriod      = 'Lookback window used to estimate the Hurst exponent via variance scaling. Larger values produce a more stable H reading that is less reactive to short-term noise, but slower to reflect regime changes.'
+tooltipHLag         = 'Return horizon (q) used in the variance scaling formula. The Hurst exponent is estimated by comparing variance at lag 1 vs lag q. Larger values increase the contrast between short and long-run variance, producing a more differentiated H estimate.'
+tooltipKFGain       = 'Base Kalman tracking gain before Hurst scaling. Controls how aggressively the smoother follows price. This value is multiplied by (0.5 + H) at runtime. In trending markets the gain is amplified, in choppy markets it is reduced.'
+tooltipATRLen       = 'ATR lookback period used to calculate the raw band width. Larger values smooth ATR, reducing band sensitivity to short-term volatility spikes.'
+tooltipATRBase      = 'Minimum ATR multiplier applied to the band regardless of Hurst state. Acts as a floor, the band is always at least this many ATRs wide.'
+tooltipATRScale     = 'Controls how aggressively the Hurst exponent widens the band in choppy conditions. The final multiplier is: Base + Scale x (1 - H). Set to 0 to disable Hurst adaptation on the band entirely.'
+tooltipColorPreset  = 'Pre-configured color schemes for different chart themes and visual preferences. Classic uses traditional green/red. Aqua provides ocean-inspired tones. Cosmic offers futuristic cyan/purple. Cyber features warm/cool contrast. Neon delivers high-contrast yellow/magenta for maximum visibility. Custom allows full color customisation using the color pickers below.'
+tooltipBullishColor = 'Color used when the Hurst Adaptive Supertrend is below price, confirming a bullish trend. Opacity is modulated by the Hurst value. Vivid color indicates strong trend conviction, faded color indicates a choppy or uncertain regime.'
+tooltipBearishColor = 'Color used when the Hurst Adaptive Supertrend is above price, confirming a bearish trend. Opacity is modulated by the Hurst value. Vivid color indicates strong trend conviction, faded color indicates a choppy or uncertain regime.'
+
+//              ╔════════════════════════════════╗              //
+//              ║        INPUT PARAMETERS        ║              //
+//              ╚════════════════════════════════╝              //
+
+preset_config = input.string('Default', 'Preset Configuration',
+     options = ['Default', 'Fast Response', 'Smooth Trend'],
+     tooltip = tooltipPreset,
+     group   = Preset_Settings)
+
+int   h_period   = input.int  (60,  'Lookback Period',    minval=20,           tooltip=tooltipHPeriod,  group=Hurst_Settings)
+int   h_lag      = input.int  (10,  'Scaling Lag (q)',    minval=2, maxval=30, tooltip=tooltipHLag,     group=Hurst_Settings)
+
+float kf_gain    = input.float(0.2, 'Base Tracking Gain', minval=0.01, maxval=0.99, step=0.01, tooltip=tooltipKFGain, group=Kalman_Settings)
+
+int   atr_len    = input.int  (10,  'ATR Length',         minval=1,  tooltip=tooltipATRLen,   group=Band_Settings)
+float atr_base   = input.float(1.5, 'Base Multiplier',    step=0.1,  tooltip=tooltipATRBase,  group=Band_Settings)
+float atr_hscale = input.float(3.0, 'Hurst Scale Factor', step=0.1,  tooltip=tooltipATRScale, group=Band_Settings)
+
+string color_preset = input.string('Custom', 'Color Preset',
+     options = ['Classic', 'Aqua', 'Cosmic', 'Cyber', 'Neon', 'Custom'],
+     tooltip = tooltipColorPreset,
+     group   = Appearance_Settings)
+color bullish_input = input.color(#00ffaa, 'Bullish Color', tooltip=tooltipBullishColor, group=Appearance_Settings)
+color bearish_input = input.color(#ff0000, 'Bearish Color', tooltip=tooltipBearishColor, group=Appearance_Settings)
+
+//              ╔════════════════════════════════╗              //
+//              ║      PRESET CONFIGURATION      ║              //
+//              ╚════════════════════════════════╝              //
+
+active_h_period   = preset_config == 'Fast Response' ? 40   : preset_config == 'Smooth Trend' ? 80   : h_period
+active_h_lag      = preset_config == 'Fast Response' ? 5    : preset_config == 'Smooth Trend' ? 15   : h_lag
+active_kf_gain    = preset_config == 'Fast Response' ? 0.35 : preset_config == 'Smooth Trend' ? 0.10 : kf_gain
+active_atr_len    = preset_config == 'Fast Response' ? 7    : preset_config == 'Smooth Trend' ? 14   : atr_len
+active_atr_base   = preset_config == 'Fast Response' ? 1.0  : preset_config == 'Smooth Trend' ? 2.0  : atr_base
+active_atr_hscale = preset_config == 'Fast Response' ? 2.0  : preset_config == 'Smooth Trend' ? 4.0  : atr_hscale
+
+//              ╔════════════════════════════════╗              //
+//              ║          COLOR PRESETS         ║              //
+//              ╚════════════════════════════════╝              //
+
+[bullish_color, bearish_color] = switch color_preset
+    'Classic' => [#00ff00, #ff0000]
+    'Aqua'    => [#00d4ff, #ff8c00]
+    'Cosmic'  => [#49ffce, #9932cc]
+    'Cyber'   => [#00cccc, #ff6600]
+    'Neon'    => [#ffff00, #ff00ff]
+    =>           [bullish_input, bearish_input]
+
+//              ╔════════════════════════════════╗              //
+//              ║         HURST EXPONENT         ║              //
+//              ╚════════════════════════════════╝              //
+
+float var1  = ta.variance(close - close[1],              active_h_period)
+float varq  = ta.variance(close - close[active_h_lag],   active_h_period)
+
+float H_raw = math.log(varq / math.max(var1, 1e-10)) / (2.0 * math.log(active_h_lag))
+float H     = math.max(0.0, math.min(H_raw, 1.0))
+float safeH = nz(H, 0.5)
+
+//              ╔════════════════════════════════╗              //
+//              ║        KALMAN SMOOTHER         ║              //
+//              ╚════════════════════════════════╝              //
+
+float adaptive_gain = math.max(math.min(active_kf_gain * (0.5 + safeH), 0.99), 0.01)
+
+var float kf = na
+kf := na(kf[1]) ? close : kf[1] + adaptive_gain * (close - kf[1])
+
+//              ╔════════════════════════════════╗              //
+//              ║           TREND BAND           ║              //
+//              ╚════════════════════════════════╝              //
+
+float h_mult = active_atr_base + active_atr_hscale * (1.0 - safeH)
+float band   = ta.atr(active_atr_len) * h_mult
+
+var float upBand = na
+var float dnBand = na
+var int   trend  = 1
+
+int   prevT  = nz(trend[1], 1)
+float prevUp = na(upBand[1]) ? close : upBand[1]
+float prevDn = na(dnBand[1]) ? close : dnBand[1]
+
+upBand := prevT ==  1 ? math.max(kf - band, prevUp) : kf - band
+dnBand := prevT == -1 ? math.min(kf + band, prevDn) : kf + band
+
+trend  := kf > prevDn ? 1 : kf < prevUp ? -1 : prevT
+
+//              ╔════════════════════════════════╗              //
+//              ║          TREND STATES          ║              //
+//              ╚════════════════════════════════╝              //
+
+bool isBull        = trend ==  1
+bool isBear        = trend == -1
+bool turnedBullish = isBull and not isBull[1]
+bool turnedBearish = isBear and not isBear[1]
+
+//              ╔════════════════════════════════╗              //
+//              ║         VISUALIZATION          ║              //
+//              ╚════════════════════════════════╝              //
+
+float trendLine = isBull ? upBand : dnBand
+int   hAlpha    = math.round((1.0 - safeH) * 65)
+color trendCol  = isBull ? color.new(bullish_color, hAlpha) : color.new(bearish_color, hAlpha)
+
+plot(trendLine, color=trendCol, linewidth=4, style=plot.style_line, title="Hurst Exponent Adaptive Supertrend")
+
+//              ╔════════════════════════════════╗              //
+//              ║             ALERTS             ║              //
+//              ╚════════════════════════════════╝              //
+
+alertcondition(turnedBullish, title='Bullish Trend Signal',
+     message='Hurst Exponent Adaptive Supertrend [QuantAlgo]: BULLISH trend confirmed on {{exchange}}:{{ticker}} - {{interval}}')
+alertcondition(turnedBearish, title='Bearish Trend Signal',
+     message='Hurst Exponent Adaptive Supertrend [QuantAlgo]: BEARISH trend confirmed on {{exchange}}:{{ticker}} - {{interval}}')
+
+//              ╔════════════════════════════════╗              //
+//              ║           CREATED BY           ║              //
+//              ╚════════════════════════════════╝              //
+
+// ██████╗ ██╗   ██╗ █████╗ ███╗   ██╗████████╗     █████╗ ██╗      ██████╗  ██████╗
+//██╔═══██╗██║   ██║██╔══██╗████╗  ██║╚══██╔══╝    ██╔══██╗██║     ██╔════╝ ██╔═══██╗
+//██║   ██║██║   ██║███████║██╔██╗ ██║   ██║       ███████║██║     ██║  ███╗██║   ██║
+//██║▄▄ ██║██║   ██║██╔══██║██║╚██╗██║   ██║       ██╔══██║██║     ██║   ██║██║   ██║
+//╚██████╔╝╚██████╔╝██║  ██║██║ ╚████║   ██║       ██║  ██║███████╗╚██████╔╝╚██████╔╝
+// ╚══▀▀═╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝       ╚═╝  ╚═╝╚══════╝ ╚═════╝  ╚═════╝
