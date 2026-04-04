@@ -55,8 +55,6 @@ Receive 3-level improvement suggestions—from simple parameter tuning to advanc
 
 > *"The difference between a losing indicator and a winning strategy is often just one filter and a better understanding of the math. Quant ShastrAI gives you both."*
 
-[ **Get Started for Free** ] | [ **View Sample Report** ] | [ **API Documentation** ]
-
 ---
 
 *Built for traders, by quants. Quant ShastrAI is not financial advice; it is financial intelligence.*
