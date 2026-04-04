@@ -1,0 +1,127 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © chaitu50c
+
+//@version=6
+indicator('Intraday BUY/SELL & AUTO SL (5-min timeframe only) by chaitu50c)', overlay = true)
+
+// === Inputs ===
+showSignals = input.bool(true, 'Show Reversal Signals')
+buyColor = input.color(color.green, 'Buy Signal Color')
+sellColor = input.color(color.red, 'Sell Signal Color')
+signalSize = input.string('large', 'Signal Size', options = ['tiny', 'small', 'normal', 'large', 'huge'])
+
+// SL configuration
+showSLLines = input.bool(true, 'Show SL Lines')
+showSLLabels = input.bool(true, 'Show SL Labels')
+slColor = input.color(color.black, 'SL Line & Label Color')
+slLineWidth = input.int(1, 'SL Line Width', minval = 1, maxval = 5)
+titleOffset = 10
+slHitColor = input.color(color.gray, 'SL Hit Label Color')
+
+// === Persistent storage ===
+var array<line> slLines = array.new<line>()
+var array<float> slLevels = array.new<float>()
+var array<bool> slIsBuy = array.new<bool>()
+var array<bool> slActive = array.new<bool>()
+var array<int> slStartBars = array.new<int>()
+var array<label> sigLabels = array.new<label>()
+var array<label> slStopLbls = array.new<label>()
+var array<label> slHitLbls = array.new<label>()
+
+// === Reset on new session ===
+if bool(ta.change(time('D')))
+    for l in slLines
+        line.delete(l)
+    for lbl in sigLabels
+        label.delete(lbl)
+    for lbl in slStopLbls
+        label.delete(lbl)
+    for lbl in slHitLbls
+        label.delete(lbl)
+    array.clear(slLines)
+    array.clear(slLevels)
+    array.clear(slIsBuy)
+    array.clear(slActive)
+    array.clear(slStartBars)
+    array.clear(sigLabels)
+    array.clear(slStopLbls)
+    array.clear(slHitLbls)
+
+// === 3-Candle Reversal Logic (5-min only, body-close breakout) ===
+tfMin = timeframe.multiplier
+blockStartMs = math.floor(time / (15 * 60 * 1000)) * 15 * 60 * 1000
+idxInBlk = math.round((time - blockStartMs) / (tfMin * 60 * 1000)) + 1
+is5min = timeframe.period == '5'
+blockComplete = is5min and idxInBlk % 3 == 0
+
+c0g = close[2] > open[2]
+c1r = close[1] < open[1]
+c2r = close < open
+c0r = close[2] < open[2]
+c1g = close[1] > open[1]
+c2g = close > open
+
+buySignal = showSignals and blockComplete and c0r and c1g and c2g and close > high[2]
+sellSignal = showSignals and blockComplete and c0g and c1r and c2r and close < low[2]
+
+// block extremes
+blkLow = math.min(math.min(low[2], low[1]), low)
+blkHigh = math.max(math.max(high[2], high[1]), high)
+
+// === Plot ▲/▼ reversal signals ===
+if buySignal
+    lbl = label.new(bar_index, low, '▲', xloc = xloc.bar_index, yloc = yloc.belowbar, textcolor = buyColor, style = label.style_none, size = signalSize)
+    array.push(sigLabels, lbl)
+
+if sellSignal
+    lbl = label.new(bar_index, high, '▼', xloc = xloc.bar_index, yloc = yloc.abovebar, textcolor = sellColor, style = label.style_none, size = signalSize)
+    array.push(sigLabels, lbl)
+
+// === Draw SL lines ===
+if buySignal and showSLLines
+    l = line.new(bar_index, blkLow, bar_index + 1, blkLow, xloc = xloc.bar_index, extend = extend.right, color = slColor, style = line.style_dashed, width = slLineWidth)
+    array.push(slLines, l)
+    array.push(slLevels, blkLow)
+    array.push(slIsBuy, true)
+    array.push(slActive, true)
+    array.push(slStartBars, bar_index)
+
+if sellSignal and showSLLines
+    l = line.new(bar_index, blkHigh, bar_index + 1, blkHigh, xloc = xloc.bar_index, extend = extend.right, color = slColor, style = line.style_dashed, width = slLineWidth)
+    array.push(slLines, l)
+    array.push(slLevels, blkHigh)
+    array.push(slIsBuy, false)
+    array.push(slActive, true)
+    array.push(slStartBars, bar_index)
+
+// === Draw SL labels ===
+if buySignal and showSLLabels
+    lblSL = label.new(bar_index + titleOffset, blkLow, 'STOPLOSS=' + str.tostring(blkLow, format.mintick), xloc = xloc.bar_index, yloc = yloc.price, color = slColor, textcolor = color.white, style = label.style_label_left)
+    array.push(slStopLbls, lblSL)
+
+if sellSignal and showSLLabels
+    lblSL = label.new(bar_index + titleOffset, blkHigh, 'STOPLOSS=' + str.tostring(blkHigh, format.mintick), xloc = xloc.bar_index, yloc = yloc.price, color = slColor, textcolor = color.white, style = label.style_label_left)
+    array.push(slStopLbls, lblSL)
+
+// === Detect SL hits & show SL HIT ===
+if array.size(slLines) > 0
+    for i = 0 to array.size(slLines) - 1 by 1
+        if array.get(slActive, i)
+            lvl = array.get(slLevels, i)
+            isB = array.get(slIsBuy, i)
+            hit = isB ? close <= lvl : close >= lvl
+            if hit
+                line.set_x2(array.get(slLines, i), bar_index)
+                line.set_extend(array.get(slLines, i), extend.none)
+                array.set(slActive, i, false)
+                if showSLLabels
+                    label.delete(array.get(slStopLbls, i))
+                midB = math.round((array.get(slStartBars, i) + bar_index) * 0.5)
+                lblH = label.new(midB, lvl, 'SL HIT', xloc = xloc.bar_index, yloc = yloc.price, color = slHitColor, textcolor = color.white, style = label.style_label_left)
+                array.push(slHitLbls, lblH)
+
+// === Move SL labels with new bars ===
+if showSLLabels and array.size(slStopLbls) > 0
+    for i = 0 to array.size(slLines) - 1 by 1
+        if array.get(slActive, i)
+            label.set_xy(array.get(slStopLbls, i), bar_index + titleOffset, array.get(slLevels, i))
