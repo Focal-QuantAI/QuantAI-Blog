@@ -1,0 +1,34 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © nasu_is_gaji
+
+//@version=6
+strategy("Bayesian Kelly Strategy", overlay=false, fill_orders_on_standard_ohlc = true, margin_long=25, margin_short=25, process_orders_on_close=true)
+
+lookback_p = input.int(252, "Prior Lookback Window", minval=10)
+lookback_e = input.int(60, "Evidence Lookback Window", minval=10)
+interval = input.int(7, "Rebalance Interval", minval=1)
+max_lever = input.float(2, "Max Leverage", maxval=2)
+kelly_frac = input.float(0.5, "Kelly Fraction", minval=0, maxval=1)
+
+float ret = math.log(close / close[1])
+
+float p_mu = ta.sma(ret, lookback_p)
+float p_var = ta.variance(ret, lookback_p)
+float p_prec = p_var > 0 ? 1 / p_var : 0
+
+float s_mu = ta.sma(ret, lookback_e)
+float s_var = ta.variance(ret, lookback_e)
+float s_prec = s_var > 0 ? 1 / s_var : 0
+
+float f_bayes = math.min(math.max(p_prec * p_mu + s_prec * s_mu, 0) * kelly_frac, max_lever)
+
+float target = strategy.equity * f_bayes / close
+float diff = target - strategy.position_size
+
+if bar_index % interval == 0
+    if diff > 0
+        strategy.order("Expand", strategy.long, diff)
+    else if diff < 0
+        strategy.order("Reduce", strategy.short, -diff)
+
+plot(f_bayes, color=color.orange)
