@@ -1,0 +1,368 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © TheCleverTraders
+
+// =========================================================================
+// INDICATOR: RSI Elite Toolkit [Clever]
+// =========================================================================
+// Description:
+// A comprehensive RSI-based toolkit designed for professional asset analysis.
+// Includes Multi-Timeframe (MTF) analysis, advanced Divergence detection, 
+// integrated Moving Averages, and dynamic SL/TP trade visualization.
+//
+// Features:
+// - Non-Repainting MTF RSI Engine
+// - Regular & Hidden Divergence Detection (Bullish/Bearish)
+// - Integrated Trend Directional Filtering (200 EMA)
+// - Dynamic SL/TP Zone Visualization with ATR-based volatility scaling.
+// - Real-time Performance & State Dashboard.
+// =========================================================================
+
+//@version=6
+indicator("RSI Elite Toolkit [Clever]", shorttitle="RSI Elite", overlay = false, format = format.price, precision = 2)
+
+// =========================================================================
+// 1. INPUTS & PARAMETERS
+// =========================================================================
+
+// --- RSI Core Configuration ---
+grp_rsi         = "RSI Core Settings"
+rsi_source      = input.source(close, "RSI Source", group = grp_rsi)
+rsi_period      = input.int(21, "RSI Period", minval = 1, group = grp_rsi)
+enable_mtf      = input.bool(false, "Enable MTF Analysis", group = grp_rsi, tooltip = "Allows analyzing RSI from higher timeframes without repainting.")
+mtf_timeframe   = input.timeframe("D", "Higher Timeframe", group = grp_rsi)
+
+// --- Moving Average Optimization ---
+grp_ma          = "RSI Signal Smoothing"
+enable_ma       = input.bool(true, "Display RSI Smoothing MA", group = grp_ma)
+ma_type         = input.string("SMA", "Smoothing Type", options = ["SMA", "EMA", "WMA", "RMA"], group = grp_ma)
+ma_period       = input.int(14, "Smoothing Period", minval = 1, group = grp_ma)
+
+// --- Extremes & Levels ---
+grp_levels      = "Dynamic Thresholds"
+level_ob        = input.int(72, "Overbought Threshold", minval = 50, maxval = 100, group = grp_levels)
+level_os        = input.int(23, "Oversold Threshold", minval = 0, maxval = 50, group = grp_levels)
+level_mid       = input.int(50, "Equilibrium Level", group = grp_levels)
+
+// --- Divergence Engine ---
+grp_div         = "Divergence Intelligence"
+enable_div      = input.bool(true, "Analyze Divergences", group = grp_div)
+div_pivot_right = input.int(5, "Pivot Lookback Right", group = grp_div)
+div_pivot_left  = input.int(5, "Pivot Lookback Left", group = grp_div)
+div_max_range   = input.int(60, "Maximum Analysis Range", group = grp_div)
+div_min_range   = input.int(5, "Minimum Analysis Range", group = grp_div)
+
+// --- Visual Aesthetics ---
+grp_visuals     = "Visual Configuration"
+col_ob          = input.color(color.new(#00FFFF, 0), "Overbought Color", group = grp_visuals)
+col_os          = input.color(color.new(#FF00FF, 0), "Oversold Color", group = grp_visuals)
+col_neutral     = input.color(color.new(color.gray, 0), "Neutral Color", group = grp_visuals)
+enable_bg_fill  = input.bool(true, "Highlight Extreme Zones", group = grp_visuals)
+
+// --- Signal Confluence ---
+grp_signals     = "Signal Generation"
+enable_signals  = input.bool(true, "Display Trading Signals", group = grp_signals)
+signals_overlay = input.bool(true, "Overlay Signals on Main Chart", group = grp_signals)
+strategy_logic  = input.string("RSI Crosses Extremes", "Entry Strategy", options = ["RSI Crosses Extremes", "RSI Crosses MA", "Divergences"], group = grp_signals)
+col_buy_signal  = input.color(color.new(#00FFFF, 20), "Primary Buy Color", group = grp_signals)
+col_sell_signal = input.color(color.new(#FF00FF, 20), "Primary Sell Color", group = grp_signals)
+
+// --- Confluence Intelligence ---
+grp_confluence  = "Confluence Engine (Score-Based)"
+min_confluence  = input.int(3, "Minimum Confluence Score", minval = 1, maxval = 7, group = grp_confluence, tooltip = "Signal triggers only if total points exceed this value.\n- RSI Extreme: 2 pts\n- RSI MA Cross: 1 pt\n- Divergence: 3 pts\n- Trend Bias: 1 pt")
+
+// --- Risk Management Infrastructure ---
+grp_risk            = "Risk / Reward Framework"
+enable_trade_visuals = input.bool(true, "Visualize SL/TP Zones", group = grp_risk)
+atr_period          = input.int(14, "Volatility Matrix (ATR)", group = grp_risk)
+sl_multiplier       = input.float(3.0, "Stop Loss Multiplier", step = 0.1, group = grp_risk)
+tp_multiplier       = input.float(8.0, "Take Profit Multiplier", step = 0.1, group = grp_risk)
+col_tp_long         = input.color(color.new(#16bbce, 90), "Bullish Target Zone", group = grp_risk)
+col_tp_short        = input.color(color.new(#a114c1, 90), "Bearish Target Zone", group = grp_risk)
+col_sl_zone         = input.color(color.new(color.gray, 92), "Risk Limitation Zone", group = grp_risk)
+
+// --- Analytical Overlay & Dashboard ---
+grp_dashboard   = "Analytical Dashboard"
+enable_ema_200  = input.bool(true, "Display Institutional Bias (200 EMA)", group = grp_dashboard)
+ema_200_period  = input.int(200, "Bias Period", group = grp_dashboard)
+enable_dashboard = input.bool(true, "Display Operational Dashboard", group = grp_dashboard)
+dashboard_pos   = input.string("Top Right", "Dashboard Position", options = ["Top Right", "Bottom Right", "Bottom Left", "Top Left"], group = grp_dashboard)
+
+// =========================================================================
+// 2. CORE CALCULATIONS
+// =========================================================================
+
+// Non-Repainting RSI Function
+calc_rsi(src, len) =>
+    float up   = ta.rma(math.max(ta.change(src), 0), len)
+    float down = ta.rma(-math.min(ta.change(src), 0), len)
+    down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
+
+float rsi_raw = calc_rsi(rsi_source, rsi_period)
+float rsi_val = enable_mtf ? request.security(syminfo.tickerid, mtf_timeframe, rsi_raw, gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off) : rsi_raw
+
+// Smoothing Logic
+float smoothing_ma = switch ma_type
+    "SMA" => ta.sma(rsi_val, ma_period)
+    "EMA" => ta.ema(rsi_val, ma_period)
+    "WMA" => ta.wma(rsi_val, ma_period)
+    "RMA" => ta.rma(rsi_val, ma_period)
+    => na
+
+// --- Divergence Intelligence Engine ---
+bool pl_found = not na(ta.pivotlow(rsi_val, div_pivot_left, div_pivot_right))
+bool ph_found = not na(ta.pivothigh(rsi_val, div_pivot_left, div_pivot_right))
+
+float rsi_pl      = ta.valuewhen(pl_found, rsi_val[div_pivot_right], 0)
+float price_pl    = ta.valuewhen(pl_found, low[div_pivot_right], 0)
+float rsi_ph      = ta.valuewhen(ph_found, rsi_val[div_pivot_right], 0)
+float price_ph    = ta.valuewhen(ph_found, high[div_pivot_right], 0)
+
+float rsi_pl_prev   = ta.valuewhen(pl_found, rsi_val[div_pivot_right], 1)
+float price_pl_prev = ta.valuewhen(pl_found, low[div_pivot_right], 1)
+float rsi_ph_prev   = ta.valuewhen(ph_found, rsi_val[div_pivot_right], 1)
+float price_ph_prev = ta.valuewhen(ph_found, high[div_pivot_right], 1)
+
+int bars_since_pl = ta.barssince(pl_found)
+int bars_since_ph = ta.barssince(ph_found)
+
+int dist_pl = nz(bars_since_pl[1]) + 1
+int dist_ph = nz(bars_since_ph[1]) + 1
+
+bool is_valid_low  = dist_pl >= div_min_range and dist_pl <= div_max_range
+bool is_valid_high = dist_ph >= div_min_range and dist_ph <= div_max_range
+
+// Logic Matrices
+bool bull_reg_div = pl_found and (price_pl < price_pl_prev) and (rsi_pl > rsi_pl_prev) and is_valid_low
+bool bull_hid_div = pl_found and (price_pl > price_pl_prev) and (rsi_pl < rsi_pl_prev) and is_valid_low
+
+bool bear_reg_div = ph_found and (price_ph > price_ph_prev) and (rsi_ph < rsi_ph_prev) and is_valid_high
+bool bear_hid_div = ph_found and (price_ph < price_ph_prev) and (rsi_ph > rsi_ph_prev) and is_valid_high
+
+// =========================================================================
+// 3. VISUALIZATION LAYER
+// =========================================================================
+
+// High-Performance Color Matrix
+color rsi_display_color = rsi_val >= level_ob ? col_ob : rsi_val <= level_os ? col_os : col_neutral
+
+// Reference Topology
+ob_line  = hline(level_ob, "Overbought", color = color.new(col_ob, 50), linestyle = hline.style_dashed)
+mid_line = hline(level_mid, "Equilibrium", color = color.new(color.gray, 50), linestyle = hline.style_dotted)
+os_line  = hline(level_os, "Oversold", color = color.new(col_os, 50), linestyle = hline.style_dashed)
+
+top_limit = hline(100, display = display.none)
+bot_limit = hline(0, display = display.none)
+
+fill(ob_line, top_limit, color = enable_bg_fill ? color.new(col_ob, 90) : na, title = "Extreme Overbought Fill")
+fill(ob_line, os_line,  color = enable_bg_fill ? color.new(color.purple, 97) : na, title = "Central Neutral Range Fill")
+fill(bot_limit, os_line, color = enable_bg_fill ? color.new(col_os, 90) : na, title = "Extreme Oversold Fill")
+
+// Integrated Plots
+plot(rsi_val, title = "Primary Elite RSI", color = rsi_display_color, linewidth = 2)
+plot(enable_ma ? smoothing_ma : na, title = "Signal Smoothing Vector", color = color.new(color.orange, 0), linewidth = 1)
+
+// Divergence Visual Markers (Indicator Pane)
+plotshape(enable_div and bull_reg_div ? rsi_val[div_pivot_right] : na, "Bull Reg Div (Pane)", shape.circle, location.absolute, col_os, offset = -div_pivot_right, size = size.tiny)
+plotshape(enable_div and bear_reg_div ? rsi_val[div_pivot_right] : na, "Bear Reg Div (Pane)", shape.circle, location.absolute, col_ob, offset = -div_pivot_right, size = size.tiny)
+
+// Divergence Visual Markers (Chart Overlay)
+plotshape(enable_div and bull_reg_div, "Regular Bullish Divergence", shape.circle, location.belowbar, color.new(#25b7bc, 0), offset = -div_pivot_right, size = size.tiny, text = "REG BULL", textcolor = color.new(#259fac, 0), force_overlay = true)
+plotshape(enable_div and bear_reg_div, "Regular Bearish Divergence", shape.circle, location.abovebar, color.new(#8f27cb, 0), offset = -div_pivot_right, size = size.tiny, text = "REG BEAR", textcolor = color.new(#c32acb, 0), force_overlay = true)
+
+// Dynamic Labeling & Line Management (Memory Efficient)
+var array<label> div_labels = array.new_label()
+var array<line>  div_lines  = array.new_line()
+
+if enable_div and bull_reg_div
+    label l = label.new(bar_index - div_pivot_right, rsi_val[div_pivot_right], "REG BULL", color = color.new(color.black, 100), textcolor = col_os, style = label.style_label_up, size = size.tiny)
+    line  n = line.new(bar_index - div_pivot_right - dist_pl, rsi_pl_prev, bar_index - div_pivot_right, rsi_pl, color = col_os, width = 1, style = line.style_dotted)
+    div_labels.unshift(l)
+    div_lines.unshift(n)
+
+if enable_div and bear_reg_div
+    label l = label.new(bar_index - div_pivot_right, rsi_val[div_pivot_right], "REG BEAR", color = color.new(color.black, 100), textcolor = col_ob, style = label.style_label_down, size = size.tiny)
+    line  n = line.new(bar_index - div_pivot_right - dist_ph, rsi_ph_prev, bar_index - div_pivot_right, rsi_ph, color = col_ob, width = 1, style = line.style_dotted)
+    div_labels.unshift(l)
+    div_lines.unshift(n)
+
+// Historical Object Cleanup (Memory Efficiency)
+while div_labels.size() > 50
+    label.delete(div_labels.pop())
+while div_lines.size() > 50
+    line.delete(div_lines.pop())
+
+// Bias Overlay
+float bias_vector = ta.ema(close, ema_200_period)
+plot(enable_ema_200 ? bias_vector : na, "Institutional Bias Overlay", color = color.new(color.white, 30), linewidth = 2, force_overlay = true)
+
+// =========================================================================
+// 4. SIGNAL CONFLUENCE ENGINE
+// =========================================================================
+// Confluence Scoring Logic
+int long_score  = 0
+int short_score = 0
+
+// Rule 1: RSI Extremes (2 Points)
+if ta.crossover(rsi_val, level_os)
+    long_score += 2
+if ta.crossunder(rsi_val, level_ob)
+    short_score += 2
+
+// Rule 2: RSI MA Cross (1 Point)
+if ta.crossover(rsi_val, smoothing_ma)
+    long_score += 1
+if ta.crossunder(rsi_val, smoothing_ma)
+    short_score += 1
+
+// Rule 3: Divergence (3 Points)
+if bull_reg_div
+    long_score += 3
+if bear_reg_div
+    short_score += 3
+
+// Rule 4: Trend Bias (1 Point)
+if close > bias_vector
+    long_score += 1
+if close < bias_vector
+    short_score += 1
+
+// Professional Signal Filter
+buy_signal  = long_score >= min_confluence
+sell_signal = short_score >= min_confluence
+
+int signal_offset = strategy_logic == "Divergences" ? -div_pivot_right : 0
+
+// Architectural Signal Plots
+plotshape(enable_signals and signals_overlay and buy_signal,  "Elite Buy Signal Overlay", shape.labelup,   location.belowbar, col_buy_signal,  size = size.tiny, text = "BUY",  textcolor = color.white, offset = signal_offset, force_overlay = true)
+plotshape(enable_signals and signals_overlay and sell_signal, "Elite Sell Signal Overlay", shape.labeldown, location.abovebar, col_sell_signal, size = size.tiny, text = "SELL", textcolor = color.white, offset = signal_offset, force_overlay = true)
+
+// Operational Performance Metrics
+var int cumulative_buys  = 0
+var int cumulative_sells = 0
+if buy_signal 
+    cumulative_buys  += 1
+if sell_signal
+    cumulative_sells += 1
+
+// =========================================================================
+// 5. RISK MANAGEMENT INFRASTRUCTURE
+// =========================================================================
+var box long_tp_zone  = na
+var box long_sl_zone  = na
+var box short_tp_zone = na
+var box short_sl_zone = na
+var line entry_vector = na
+
+var int active_state = 0 // 1: Bullish, -1: Bearish
+var float stop_level = na
+var float target_level = na
+
+float vol_atr = ta.atr(atr_period)
+
+// Long Deployment
+if buy_signal and active_state == 0
+    float entry_px = close
+    float sl_px    = entry_px - (vol_atr * sl_multiplier)
+    float tp_px    = entry_px + (vol_atr * tp_multiplier)
+    
+    active_state := 1
+    stop_level   := sl_px
+    target_level := tp_px
+
+    if enable_trade_visuals
+        long_tp_zone := box.new(bar_index, tp_px, bar_index + 10, entry_px, bgcolor = col_tp_long, border_color = color.new(color.green, 100), xloc = xloc.bar_index, force_overlay = true)
+        long_sl_zone := box.new(bar_index, entry_px, bar_index + 10, sl_px, bgcolor = col_sl_zone, border_color = color.new(color.red, 100), xloc = xloc.bar_index, force_overlay = true)
+        entry_vector := line.new(bar_index, entry_px, bar_index + 10, entry_px, color = color.aqua, width = 2, force_overlay = true)
+
+// Short Deployment
+if sell_signal and active_state == 0
+    float entry_px = close
+    float sl_px    = entry_px + (vol_atr * sl_multiplier)
+    float tp_px    = entry_px - (vol_atr * tp_multiplier)
+    
+    active_state := -1
+    stop_level   := sl_px
+    target_level := tp_px
+
+    if enable_trade_visuals
+        short_tp_zone := box.new(bar_index, entry_px, bar_index + 10, tp_px, bgcolor = col_tp_short, border_color = color.new(color.red, 100), xloc = xloc.bar_index, force_overlay = true)
+        short_sl_zone := box.new(bar_index, sl_px, bar_index + 10, entry_px, bgcolor = col_sl_zone, border_color = color.new(color.red, 100), xloc = xloc.bar_index, force_overlay = true)
+        entry_vector := line.new(bar_index, entry_px, bar_index + 10, entry_px, color = color.aqua, width = 2, force_overlay = true)
+
+// Termination Logic
+if active_state == 1
+    if enable_trade_visuals
+        box.set_right(long_tp_zone, bar_index)
+        box.set_right(long_sl_zone, bar_index)
+        line.set_x2(entry_vector, bar_index)
+    if low <= stop_level
+        active_state := 0
+    else if high >= target_level
+        active_state := 0
+
+if active_state == -1
+    if enable_trade_visuals
+        box.set_right(short_tp_zone, bar_index)
+        box.set_right(short_sl_zone, bar_index)
+        line.set_x2(entry_vector, bar_index)
+    if high >= stop_level
+        active_state := 0
+    else if low <= target_level
+        active_state := 0
+
+// =========================================================================
+// 6. OPERATIONAL DASHBOARD
+// =========================================================================
+if enable_dashboard and barstate.islast
+    table_pos = dashboard_pos == "Top Right" ? position.top_right : dashboard_pos == "Bottom Right" ? position.bottom_right : dashboard_pos == "Bottom Left" ? position.bottom_left : position.top_left
+    var table hub = table.new(table_pos, 2, 9, bgcolor = color.new(#131722, 10), border_width = 1, border_color = color.new(color.white, 90), force_overlay = true)
+    
+    rsi_status = rsi_val > level_ob ? "Overbought" : rsi_val < level_os ? "Oversold" : "Neutral"
+    rsi_status_color = rsi_val > level_ob ? color.new(#aa25c8, 0) : rsi_val < level_os ? color.new(#1cb9cb, 0) : color.new(color.white, 30)
+    
+    trend_state_txt = close > bias_vector ? "BULLISH ⇡" : "BEARISH ⇣"
+    trend_state_color = close > bias_vector ? color.new(#10bbce, 0) : color.new(#c318c3, 0)
+    
+    trade_status_txt = active_state == 1 ? "LONG ACTIVE" : active_state == -1 ? "SHORT ACTIVE" : "WAITING"
+    trade_status_color = active_state == 1 ? color.new(#0ec1d5, 0) : active_state == -1 ? color.new(#c41cda, 0) : color.new(color.white, 30)
+
+    table.cell(hub, 0, 0, "✦ RSI ELITE HUB ✦", text_color = color.white, text_size = size.small, bgcolor = color.new(#2962ff, 10), text_halign = text.align_center)
+    table.merge_cells(hub, 0, 0, 1, 0)
+    
+    table.cell(hub, 0, 1, "RSI STATE", text_color = color.new(color.white, 50), text_size = size.small, text_halign = text.align_left)
+    table.cell(hub, 1, 1, rsi_status, text_color = rsi_status_color, text_size = size.small, text_halign = text.align_right)
+    
+    table.cell(hub, 0, 2, "MAIN BIAS", text_color = color.new(color.white, 50), text_size = size.small, text_halign = text.align_left)
+    table.cell(hub, 1, 2, trend_state_txt, text_color = trend_state_color, text_size = size.small, text_halign = text.align_right)
+    
+    table.cell(hub, 0, 3, "LIVE ENGINE", text_color = color.new(color.white, 50), text_size = size.small, text_halign = text.align_left)
+    table.cell(hub, 1, 3, trade_status_txt, text_color = trade_status_color, text_size = size.small, text_halign = text.align_right, bgcolor = color.new(trade_status_color, 95))
+
+    table.cell(hub, 0, 4, "TOTAL BUYS", text_color = color.new(color.white, 50), text_size = size.small, text_halign = text.align_left)
+    table.cell(hub, 1, 4, str.tostring(cumulative_buys), text_color = color.rgb(38, 203, 197), text_size = size.small, text_halign = text.align_right)
+
+    table.cell(hub, 0, 5, "TOTAL SELLS", text_color = color.new(color.white, 50), text_size = size.small, text_halign = text.align_left)
+    table.cell(hub, 1, 5, str.tostring(cumulative_sells), text_color = color.rgb(177, 37, 208), text_size = size.small, text_halign = text.align_right)
+
+    table.cell(hub, 0, 6, "CONFLUENCE", text_color = color.new(color.white, 50), text_size = size.small, text_halign = text.align_left)
+    table.cell(hub, 1, 6, str.tostring(math.max(long_score, short_score)) + " / " + str.tostring(min_confluence), text_color = color.yellow, text_size = size.small, text_halign = text.align_right)
+
+// =========================================================================
+// 7. ALERT & NOTIFICATION SYSTEM
+// =========================================================================
+alertcondition(ta.crossover(rsi_val, level_os), "Bullish: OS Exit", "RSI exited oversold territory.")
+alertcondition(ta.crossunder(rsi_val, level_ob), "Bearish: OB Exit", "RSI exited overbought territory.")
+alertcondition(ta.crossover(rsi_val, smoothing_ma), "Bullish: MA Cross", "RSI momentum flipped above smoothing average.")
+alertcondition(ta.crossunder(rsi_val, smoothing_ma), "Bearish: MA Cross", "RSI momentum flipped below smoothing average.")
+alertcondition(bull_reg_div, "Regular Bullish Divergence", "Potential trend reversal detected (Bullish).")
+alertcondition(bear_reg_div, "Regular Bearish Divergence", "Potential trend reversal detected (Bearish).")
+alertcondition(buy_signal, "Strategy Buy Signal", "Configured RSI Elite strategy triggered a BUY.")
+alertcondition(sell_signal, "Strategy Sell Signal", "Configured RSI Elite strategy triggered a SELL.")
+
+// =========================================================================
+// DISCLAIMER:
+// This script is provided for educational and analytical purposes only.
+// It does not constitute financial advice. Trading in financial markets
+// involves significant risk, and past performance is not indicative of
+// future results. Always conduct your own research before placing trades.
+// =========================================================================
