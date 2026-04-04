@@ -1,0 +1,265 @@
+//@version=6
+indicator("Quantum Scalper 5M", shorttitle="5M Scalper", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=500)
+
+// ==========================================
+// === INPUTS ===
+// ==========================================
+
+// --- SR Retest Settings ---
+grp_sr = "Support/Resistance Settings"
+lookback       = input.int(50, title="Lookback Period", group=grp_sr)
+confirmBars    = input.int(2, minval=1, maxval=10, title="Confirmation Bars", group=grp_sr)
+minDistancePct = input.float(0.2, title="Minimum SR Distance (%)", minval=0.0, step=0.1, group=grp_sr) 
+
+// --- Bollinger Bands Settings ---
+grp_bb = "Bollinger Bands Settings"
+bb_length = input.int(15, title="Moving Average Length", group=grp_bb) 
+bb_mult   = input.float(2.0, title="Band Multiplier", group=grp_bb)
+
+// --- Quantum Trend Flow Settings ---
+grp_qtf = "Quantum Trend Flow Settings"
+qtf_len  = input.int(20, "Channel Length", group=grp_qtf)
+qtf_mult = input.float(2.0, "Channel Volatility Multiplier", group=grp_qtf)
+useMTF   = input.bool(false, "Use Higher Timeframe Filter", group=grp_qtf, tooltip="Filters signals in the direction of the MTF trend.") 
+mtf_res  = input.timeframe("15", "Higher Timeframe", group=grp_qtf) 
+
+// --- Visual Settings ---
+grp_vis = "Visual Settings"
+showRRBox     = input.bool(true, title="Show Dynamic RR Box", group=grp_vis, tooltip="Draws sl_pct stop and tp_pct profit box extending until hit.")
+showBB        = input.bool(false, title="Show Bollinger Bands", group=grp_vis)
+showChannel   = input.bool(false, title="Show Quantum Channel", group=grp_vis)
+showDashboard = input.bool(true, "Show Dashboard", group=grp_vis)
+colorBars     = input.bool(true, "Color Bars", group=grp_vis)
+
+// --- COLOR PALETTE ---
+c_bull_strong = #00ffaa
+c_bull_weak   = #005544
+c_bear_strong = #ff0055
+c_bear_weak   = #550022
+c_channel     = #3366ff
+c_text        = color.white
+
+// ==========================================
+// === 1. SR RETEST LOGIC ===
+// ==========================================
+srHigh = ta.highest(high, lookback)
+srLow  = ta.lowest(low, lookback)
+
+srHigh_fixed = srHigh[confirmBars]
+srLow_fixed  = srLow[confirmBars]
+
+plot(srHigh_fixed, "Fixed Resistance", color=color.red, linewidth=1)
+plot(srLow_fixed, "Fixed Support", color=color.green, linewidth=1)
+
+// ==========================================
+// === 2. BOLLINGER BANDS LOGIC ===
+// ==========================================
+bb_basis = ta.sma(close, bb_length)
+bb_dev   = bb_mult * ta.stdev(close, bb_length)
+bb_upper = bb_basis + bb_dev
+bb_lower = bb_basis - bb_dev
+
+plot(showBB ? bb_upper : na, color=color.new(color.red, 50), linewidth=1, title="BB Upper")
+plot(showBB ? bb_lower : na, color=color.new(color.green, 50), linewidth=1, title="BB Lower")
+plot(showBB ? bb_basis : na, color=color.new(color.blue, 50), linewidth=1, title="BB Basis")
+
+// ==========================================
+// === 3. QUANTUM TREND FLOW LOGIC ===
+// ==========================================
+qtf_basis = ta.ema(close, qtf_len)
+qtf_range = ta.atr(qtf_len)
+qtf_dev   = qtf_mult * ta.stdev(close, qtf_len)
+qtf_upper = qtf_basis + (qtf_range + qtf_dev) / 2
+qtf_lower = qtf_basis - (qtf_range + qtf_dev) / 2
+
+mom_len = 14
+rsi_val = ta.rsi(close, mom_len)
+mom_trend = 0
+if rsi_val > 60
+    mom_trend := 2
+else if rsi_val > 50
+    mom_trend := 1
+else if rsi_val < 40
+    mom_trend := -2
+else if rsi_val < 50
+    mom_trend := -1
+
+mtf_ema = request.security(syminfo.tickerid, mtf_res, ta.ema(close, 50))
+mtf_close = request.security(syminfo.tickerid, mtf_res, close)
+mtf_trend_dir = mtf_close > mtf_ema ? 1 : -1
+
+mtf_check_long  = useMTF ? (mtf_trend_dir == 1) : true
+mtf_check_short = useMTF ? (mtf_trend_dir == -1) : true
+
+// Channel Visuals
+p_upper = plot(showChannel ? qtf_upper : na, "Channel Upper", color=color.new(c_channel, 50))
+p_lower = plot(showChannel ? qtf_lower : na, "Channel Lower", color=color.new(c_channel, 50))
+fill(p_upper, p_lower, color=color.new(c_channel, 90), title="Channel Fill")
+plot(showChannel ? qtf_basis : na, "Channel Mid", color=color.new(c_channel, 30))
+
+// Bar Colors
+color bar_color = na 
+if colorBars
+    if mom_trend == 2
+        bar_color := c_bull_strong
+    else if mom_trend == 1
+        bar_color := close > open ? c_bull_strong : c_bull_weak
+    else if mom_trend == -2
+        bar_color := c_bear_strong
+    else if mom_trend == -1
+        bar_color := close < open ? c_bear_strong : c_bear_weak
+barcolor(bar_color)
+
+// ==========================================
+// === 4. STRICT TOUCH & REJECT LOGIC ===
+// ==========================================
+
+// BUY: Low touches all 3 lower bands/supports, and close is above all 3
+buyTouch  = low <= srLow_fixed and low <= bb_lower and low <= qtf_lower
+buyReject = close > srLow_fixed and close > bb_lower and close > qtf_lower
+masterLong = buyTouch and buyReject and mtf_check_long
+
+// SELL: High touches all 3 upper bands/resistances, and close is below all 3
+sellTouch  = high >= srHigh_fixed and high >= bb_upper and high >= qtf_upper
+sellReject = close < srHigh_fixed and close < bb_upper and close < qtf_upper
+masterShort = sellTouch and sellReject and mtf_check_short
+
+var int last_signal = 0
+finalLong  = masterLong and last_signal != 1
+finalShort = masterShort and last_signal != -1
+
+if finalLong
+    last_signal := 1
+if finalShort
+    last_signal := -1
+
+// Signal Visuals & Alerts
+if finalLong
+    label.new(bar_index, low, "BUY", color=c_bull_strong, style=label.style_label_up, textcolor=c_text, size=size.large, yloc=yloc.belowbar)
+    alert("Quantum Scalper: BUY Signal Detected!", alert.freq_once_per_bar)
+
+if finalShort
+    label.new(bar_index, high, "SELL", color=c_bear_strong, style=label.style_label_down, textcolor=c_text, size=size.large, yloc=yloc.abovebar)
+    alert("Quantum Scalper: SELL Signal Detected!", alert.freq_once_per_bar)
+
+// ==========================================
+// === 5. DYNAMIC RISK/REWARD BOXES ===
+// ==========================================
+
+// New Inputs for RR box
+grp_rr = "Risk/Reward Box Settings"
+rr_sl_pct  = input.float(0.5, title="Stop Loss (%)", step=0.1, group=grp_rr, tooltip="Percent distance for the red SL box.")
+rr_tp_pct  = input.float(1.0, title="Take Profit (%)", step=0.1, group=grp_rr, tooltip="Percent distance for the green TP box.")
+
+// Define a Custom Type to track active trades
+type TradeTracker
+    int dir
+    float tp
+    float sl
+    box box_tp
+    box box_sl
+    bool active
+
+var trade_list = array.new<TradeTracker>()
+
+// Buy Box Init
+if showRRBox and finalLong
+    float entry_price = close
+    float sl_level = entry_price * (1 - rr_sl_pct / 100)
+    float tp_level = entry_price * (1 + rr_tp_pct / 100)
+    
+    box b_tp = box.new(left=bar_index, right=bar_index, top=tp_level, bottom=entry_price, bgcolor=color.new(color.green, 85), border_color=color.green)
+    box b_sl = box.new(left=bar_index, right=bar_index, top=entry_price, bottom=sl_level, bgcolor=color.new(color.red, 85), border_color=color.red)
+    
+    array.push(trade_list, TradeTracker.new(1, tp_level, sl_level, b_tp, b_sl, true))
+
+// Sell Box Init
+if showRRBox and finalShort
+    float entry_price = close
+    float sl_level = entry_price * (1 + rr_sl_pct / 100)
+    float tp_level = entry_price * (1 - rr_tp_pct / 100)
+    
+    box b_tp = box.new(left=bar_index, right=bar_index, top=entry_price, bottom=tp_level, bgcolor=color.new(color.green, 85), border_color=color.green)
+    box b_sl = box.new(left=bar_index, right=bar_index, top=sl_level, bottom=entry_price, bgcolor=color.new(color.red, 85), border_color=color.red)
+    
+    array.push(trade_list, TradeTracker.new(-1, tp_level, sl_level, b_tp, b_sl, true))
+
+// Dynamically extend active boxes until TP/SL is hit
+if array.size(trade_list) > 0
+    for i = array.size(trade_list) - 1 to 0
+        TradeTracker trade = array.get(trade_list, i)
+        if trade.active
+            bool hit = false
+            
+            if trade.dir == 1 // Check Long Hits
+                if high >= trade.tp or low <= trade.sl
+                    hit := true
+            else // Check Short Hits
+                if low <= trade.tp or high >= trade.sl
+                    hit := true
+                    
+            // Extend the boxes to the current bar
+            box.set_right(trade.box_tp, bar_index)
+            box.set_right(trade.box_sl, bar_index)
+            
+            // If hit TP or SL on this bar, mark as inactive so it stops extending
+            if hit
+                trade.active := false
+
+// ==========================================
+// === 6. DASHBOARD ===
+// ==========================================
+var table dash = table.new(position.top_right, 2, 4, bgcolor=color.new(#111111, 80), border_width=1, border_color=c_channel, frame_color=c_channel, frame_width=1)
+
+if showDashboard
+    table.cell(dash, 0, 0, "QUANTUM SCALPER", text_color=c_channel, text_halign=text.align_left, text_size=size.normal, bgcolor=color.new(#000000, 100))
+    table.cell(dash, 1, 0, "PRO 5M", text_color=color.gray, text_halign=text.align_right, text_size=size.small)
+    
+    // MTF Status
+    table.cell(dash, 0, 1, "Trend (" + mtf_res + "):", text_color=c_text, text_halign=text.align_left, text_size=size.small)
+    if useMTF
+        if mtf_trend_dir == 1
+            table.cell(dash, 1, 1, "UPTREND", bgcolor=c_bull_strong, text_color=color.black, text_halign=text.align_center, text_size=size.small)
+        else
+            table.cell(dash, 1, 1, "DOWNTREND", bgcolor=c_bear_strong, text_color=c_text, text_halign=text.align_center, text_size=size.small)
+    else
+        table.cell(dash, 1, 1, "DISABLED", bgcolor=color.gray, text_color=color.white, text_halign=text.align_center, text_size=size.small)
+
+    // Momentum Status
+    table.cell(dash, 0, 2, "Momentum:", text_color=c_text, text_halign=text.align_left, text_size=size.small)
+    string mom_text = "" 
+    color mom_col = color.gray 
+    color mom_bg = color.new(#000000, 100)
+    
+    if mom_trend == 2
+        mom_text := "STRONG BULL"
+        mom_bg := c_bull_strong
+        mom_col := color.black
+    else if mom_trend == 1
+        mom_text := "WEAK BULL"
+        mom_col := c_bull_strong
+    else if mom_trend == -2
+        mom_text := "STRONG BEAR"
+        mom_bg := c_bear_strong
+        mom_col := c_text
+    else if mom_trend == -1
+        mom_text := "WEAK BEAR"
+        mom_col := c_bear_strong
+    else
+        mom_text := "NEUTRAL"
+        
+    table.cell(dash, 1, 2, mom_text, bgcolor=mom_bg, text_color=mom_col, text_halign=text.align_center, text_size=size.small)
+
+    // Last Signal Status
+    table.cell(dash, 0, 3, "Last Signal:", text_color=c_text, text_halign=text.align_left, text_size=size.small)
+    string signal_text = "Waiting..."
+    color signal_bg = color.gray
+    
+    if last_signal == 1
+        signal_text := "BUY (Active)"
+        signal_bg := c_bull_strong
+    else if last_signal == -1
+        signal_text := "SELL (Active)"
+        signal_bg := c_bear_strong
+        
+    table.cell(dash, 1, 3, signal_text, bgcolor=signal_bg, text_color=last_signal == 1 ? color.black : c_text, text_halign=text.align_center, text_size=size.small)
