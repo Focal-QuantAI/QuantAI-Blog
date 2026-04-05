@@ -1,0 +1,200 @@
+//@version=5
+indicator("KNN Machine Learning Momentum Indicator", overlay=true, max_bars_back=2000)
+
+// ==========================================
+// --- CONSTANTS & STYLING ---
+// ==========================================
+color_bull     = color.new(#00ffbb, 0)
+color_bear     = color.new(#ff3355, 0)
+color_bull_dim = color.new(#00ffbb, 50)
+color_bear_dim = color.new(#ff3355, 50)
+color_neutral  = color.new(#64748b, 20)
+color_gold     = color.new(#ffd700, 0)
+
+// ==========================================
+// --- INPUT PARAMETERS ---
+// ==========================================
+group_ml = "🧠 Machine Learning Engine"
+k_neighbors      = input.int(5, "K-Neighbors (K)", minval=1, group=group_ml, tooltip="Number of nearest neighbors to consider.")
+window_size      = input.int(400, "Learning Window Size", minval=10, group=group_ml, tooltip="Historical data lookback for training.")
+prob_threshold   = input.float(0.9, "Prediction Threshold", minval=0.1, maxval=1.0, step=0.01, group=group_ml, tooltip="Confidence level required for a signal.")
+momentum_window  = input.int(4, "Momentum Window", minval=1, group=group_ml, tooltip="Look-ahead period for labeling price direction.")
+
+group_feat = "📊 Feature Engineering"
+rsi_short_len    = input.int(2, "Short RSI Period", group=group_feat)
+rsi_mid_len      = input.int(3, "Mid RSI Period", group=group_feat)
+rsi_long_len     = input.int(4, "Long RSI Period", group=group_feat)
+ma_short_len     = input.int(2, "Short MA Period", group=group_feat)
+ma_medium_len    = input.int(3, "Medium MA Period", group=group_feat)
+ma_long_len      = input.int(4, "Long MA Period", group=group_feat)
+signal_len       = input.int(4, "Signal Line Period", group=group_feat)
+p_param          = input.float(2.0, "Minkowski Parameter (p)", group=group_feat, tooltip="Distance metric exponent. 2=Euclidean, 1=Manhattan.")
+
+group_pca = "⚡ Dimensionality Reduction"
+use_pca          = input.bool(true, "Enable PCA Compression", group=group_pca, tooltip="Compresses features into 3 Principal Components to reduce noise.")
+
+group_vis = "🎨 Visual Analytics"
+use_bar_color    = input.bool(true, "Dynamic Bar Coloring", group=group_vis)
+show_table       = input.bool(true, "Show Model Performance Table", group=group_vis)
+ema_len          = input.int(20, "Trend Filter (EMA)", group=group_vis)
+
+// ==========================================
+// --- LABELING (Supervised Learning) ---
+// ==========================================
+// We define the 'target' as a bullish (+1), bearish (-1), or neutral (0) outcome
+// based on whether price reaches a new high/low within the momentum window.
+target = 1
+for i = 0 to momentum_window - 1
+    if close[momentum_window - i] >= close
+        target := 0
+target := target == 0 ? -1 : target
+if target == -1
+    for i = 0 to momentum_window - 1
+        if close[momentum_window - i] <= close
+            target := 0
+
+// ==========================================
+// --- FEATURE CALCULATION & NORMALIZATION ---
+// ==========================================
+// Standardize features using Z-score (Mean 0, Std 1) for KNN stability
+normalize(src, len) =>
+    float _mean = ta.sma(src[1], len)
+    float _std  = ta.stdev(src[1], len)
+    (src - _mean) / math.max(_std, 0.00001)
+
+// 1. RSI Variations
+f_rsi_s = ta.rsi(close, rsi_short_len)
+f_rsi_m = ta.rsi(close, rsi_mid_len)
+f_rsi_l = ta.rsi(close, rsi_long_len)
+
+// 2. Price Deviations from MA
+f_ma_s_dev = (close - ta.sma(close[1], ma_short_len)) / ta.sma(close[1], ma_short_len) * 100
+f_ma_m_dev = (close - ta.sma(close[1], ma_medium_len)) / ta.sma(close[1], ma_medium_len) * 100
+f_ma_l_dev = (close - ta.sma(close[1], ma_long_len)) / ta.sma(close[1], ma_long_len) * 100
+
+// 3. RSI Oscillatory Momentum
+f_rsi_s_sig_dist = f_rsi_s - ta.sma(f_rsi_s[1], signal_len)
+f_rsi_m_sig_dist = f_rsi_m - ta.sma(f_rsi_m[1], signal_len)
+f_rsi_l_sig_dist = f_rsi_l - ta.sma(f_rsi_l[1], signal_len)
+
+// Normalization (Applying Z-Score)
+f_rsi_s_z    = normalize(f_rsi_s, window_size)
+f_rsi_m_z    = normalize(f_rsi_m, window_size)
+f_rsi_l_z    = normalize(f_rsi_l, window_size)
+f_ma_s_dev_z = normalize(f_ma_s_dev, window_size)
+f_ma_m_dev_z = normalize(f_ma_m_dev, window_size)
+f_ma_l_dev_z = normalize(f_ma_l_dev, window_size)
+f_rsi_s_sd_z = normalize(f_rsi_s_sig_dist, window_size)
+f_rsi_m_sd_z = normalize(f_rsi_m_sig_dist, window_size)
+f_rsi_l_sd_z = normalize(f_rsi_l_sig_dist, window_size)
+
+// ==========================================
+// --- DIMENSIONALITY REDUCTION (PCA LITE) ---
+// ==========================================
+// Reducing the multi-dimensional feature space into 3 orthogonal vectors
+float pc1 = 0.0, float pc2 = 0.0, float pc3 = 0.0
+
+if use_pca
+    pc1 := (f_rsi_s_z + f_rsi_m_z + f_rsi_l_z) 
+    pc2 := (f_ma_s_dev_z + f_ma_m_dev_z + f_ma_l_dev_z)
+    pc3 := (f_rsi_s_sd_z + f_rsi_m_sd_z + f_rsi_l_sd_z) * 0.5
+else
+    pc1 := f_rsi_m_z
+    pc2 := f_ma_m_dev_z
+    pc3 := f_rsi_m_sd_z
+
+// ==========================================
+// --- KNN CORE ENGINE ---
+// ==========================================
+float prob_up = 0.0, float prob_down = 0.0
+var float[] distances = array.new_float(0)
+var float[] labels = array.new_float(0)
+
+stride = math.max(momentum_window, rsi_long_len, ma_long_len)
+
+if bar_index > window_size + momentum_window
+    array.clear(distances)
+    array.clear(labels)
+
+    // Iterating through the learning window to find closest neighbors
+    for i = momentum_window to window_size + momentum_window by stride
+        float d1 = math.abs(pc1 - pc1[i])
+        float d2 = math.abs(pc2 - pc2[i])
+        float d3 = math.abs(pc3 - pc3[i])
+        
+        // Calculating Minkowski distance (Generalized distance formula)
+        float dist_knn = math.pow(math.pow(d1, p_param) + math.pow(d2, p_param) + math.pow(d3, p_param), 1/p_param) 
+        array.push(distances, dist_knn)
+        array.push(labels, target[i])
+
+    if array.size(distances) >= k_neighbors
+        int[] sorted_indices = array.sort_indices(distances, order.ascending)
+        float sum_weight_up = 0.0, float sum_weight_down = 0.0, float total_weight = 0.0
+        
+        // Using Kernel density weight for probability estimation
+        float[] dist_sorted = array.copy(distances)
+        array.sort(dist_sorted)
+        float sigma = array.get(dist_sorted, math.min(k_neighbors, array.size(dist_sorted)-1))
+        sigma := math.max(sigma, 0.0001)
+        
+        for j = 0 to k_neighbors - 1
+            int idx = array.get(sorted_indices, j)
+            float d = array.get(distances, idx)
+            float lbl = array.get(labels, idx)
+            // Gaussian Kernel weighting
+            float weight = math.exp(-math.pow(d, 2) / (2 * math.pow(sigma, 2)))
+            
+            if lbl == 1
+                sum_weight_up += weight
+            else if lbl == -1
+                sum_weight_down += weight
+            total_weight += weight
+            
+        prob_up := total_weight > 0 ? sum_weight_up / total_weight : 0.0
+        prob_down := total_weight > 0 ? sum_weight_down / total_weight : 0.0
+
+// ==========================================
+// --- SIGNAL GENERATION ---
+// ==========================================
+bool raw_long_signal = ta.crossover(prob_up, prob_threshold)
+bool raw_short_signal = ta.crossover(prob_down, prob_threshold)
+
+var int last_dir = 0
+bool long_signal = false
+bool short_signal = false
+
+if raw_long_signal and last_dir <= 0
+    long_signal := true
+    last_dir := 1
+
+if raw_short_signal and last_dir >= 0
+    short_signal := true
+    last_dir := -1
+
+// ==========================================
+// --- VISUALIZATION & PLOTTING ---
+// ==========================================
+// Dynamic Bar Color Gradient based on Prediction Confidence
+color g_color = prob_up > prob_down ? color.from_gradient(prob_up, 0.4, 1.0, color_neutral, color_bull) : color.from_gradient(prob_down, 0.4, 1.0, color_neutral, color_bear)
+barcolor(use_bar_color ? g_color : na)
+
+// Background highlighting for signal changes
+bgcolor(long_signal ? color.new(color_bull, 90) : short_signal ? color.new(color_bear, 90) : na)
+
+// EMA Trend Filter
+ema = ta.ema(close, ema_len)
+ema_bull = close > ema
+ema_bear = close <= ema
+plot(ema, "Trend Filter", color=color.blue, style=plot.style_linebr)
+
+// Professional Plotshapes
+plotshape(long_signal and ema_bull,  "Major Long",  shape.triangleup,   location.belowbar, color_bull, size=size.small, text="Bull", textcolor=color_bull)
+plotshape(short_signal and ema_bear, "Major Short", shape.triangledown, location.abovebar, color_bear, size=size.small, text="Bear", textcolor=color_bear)
+plotshape(long_signal and not ema_bull, "Counter Long",  shape.triangleup,   location.belowbar, color_bull_dim, size=size.small)
+plotshape(short_signal and not ema_bear, "Counter Short", shape.triangledown, location.abovebar, color_bear_dim, size=size.small)
+
+// ==========================================
+// --- ALERTS ---
+// ==========================================
+alertcondition(long_signal, "KNN Long Alert", "KNN Model [Bullish Bias]: Signal Detected")
+alertcondition(short_signal, "KNN Short Alert", "KNN Model [Bearish Bias]: Signal Detected")
