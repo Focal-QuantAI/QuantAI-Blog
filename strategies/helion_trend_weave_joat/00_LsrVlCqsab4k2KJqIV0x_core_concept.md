@@ -1,0 +1,16 @@
+
+# Core Concept
+
+### 1. The Market Philosophy
+The Helion Trend Weave operates on a hybrid philosophy of **Momentum** and **Volatility Breakout**. Its core thesis is that markets cycle between periods of low-volatility consolidation (compression) and high-volatility directional moves (expansion). The script is not merely a trend-follower; it is a trend *initiation* hunter. It seeks to capture alpha by positioning for the explosive release of kinetic energy that often follows a market equilibrium. The underlying principle is that prolonged range compression builds order book pressure, and a breakout from this state often leads to a cascade of stop-loss orders and trend-following participation, fueling a persistent new impulse. The script’s "Volatility Morphing" feature further refines this by dynamically adapting to the market’s rhythm, aiming to improve the signal-to-noise ratio across different volatility regimes.
+
+### 2. The Trade Narrative
+This script engages when the market tells a story of quiet consolidation resolving into a decisive breakout. The ideal setup is a "Compression Chamber": a period where price action tightens, and the multiple moving average "filaments" of the weave pull together into a narrow, horizontal band. This visual compression, quantified by the ribbon’s spread falling to a low historical percentile, signifies market indecision and reduced volatility. The script remains passive during this phase, observing the buildup of potential energy. The narrative it seeks is the "Squeeze Release"—a sudden, high-volume surge where the ribbon filaments begin to expand and "fan out" directionally, signaling that a new consensus has been reached and a directional move is underway.
+
+### 3. Trigger Logic & Mechanics
+The script’s engine is a multi-layered moving average ribbon, or "weave." The confluence of this ribbon with ATR-based analysis forms its core logic.
+
+*   **Why these indicators?** The MA ribbon provides a multi-dimensional view of trend health and alignment. The "Volatility Morphing" via ATR is the strategic linchpin; it dynamically adjusts the MAs' lookback periods, making them more sensitive during low volatility (to catch the initial breakout spark) and less sensitive during high volatility (to filter out noise). This creates an adaptive, regime-aware system.
+*   **How do filters serve?** The "Compression Chamber" is the primary filter, focusing the strategy exclusively on high-potential breakout scenarios. It ignores standard MA crossovers that occur in already-trending, wide-ranging markets, which often have a lower probability of follow-through.
+*   **What is the catalyst?** The script flips from "observing" to "executing" on a "Momentum Surge" signal. This trigger requires a confluence of events: the end of a confirmed compression period (`isSqueeze[1]`), a rapid expansion of the ribbon’s spread, and alignment with the overall trend direction. This specific combination is the high-conviction catalyst designed to capture the inception of a new trend.
+    

@@ -1,0 +1,435 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © officialjackofalltrades
+//@version=6
+indicator("Helion Trend Weave [JOAT]", shorttitle="HTW [JOAT]", overlay=true)
+
+// ──────────────────── INPUTS ────────────────────────────────────────────────
+string GRP_CORE = "Helix Parameters"
+string maType   = input.string("EMA", "Filament Type", options=["EMA", "SMA", "SMMA"], group=GRP_CORE)
+int    basePer  = input.int(5,  "Origin Period",     minval=2,  maxval=20,  group=GRP_CORE, tooltip="Fastest MA period in the ribbon")
+int    ribbonN  = input.int(8,  "Weave Depth",       minval=3,  maxval=12,  group=GRP_CORE, tooltip="Number of MA filaments in the weave")
+int    spacing  = input.int(5,  "Filament Spacing",  minval=2,  maxval=15,  group=GRP_CORE, tooltip="Period increment between successive filaments")
+bool   adaptive = input.bool(true, "Volatility Morphing", group=GRP_CORE, tooltip="Dynamically adjust periods based on ATR regime")
+
+string GRP_ADAPT = "Morphic Tuning"
+int    atrFast   = input.int(10, "Impulse ATR",   minval=3,  maxval=30,  group=GRP_ADAPT, tooltip="Fast ATR for volatility ratio")
+int    atrSlowP  = input.int(50, "Anchor ATR",    minval=20, maxval=100, group=GRP_ADAPT, tooltip="Slow ATR for volatility ratio")
+float  adaptMin  = input.float(0.5, "Morph Floor", minval=0.2, maxval=1.0, step=0.1, group=GRP_ADAPT)
+float  adaptMax  = input.float(2.0, "Morph Ceiling", minval=1.0, maxval=4.0, step=0.1, group=GRP_ADAPT)
+
+string GRP_SQ   = "Compression Chamber"
+bool   showSqueeze = input.bool(true, "Compression Aura", group=GRP_SQ, tooltip="Background highlight when ribbon compresses below threshold")
+int    sqLen       = input.int(100, "Chamber Lookback", minval=20, maxval=300, group=GRP_SQ)
+float  sqPctile    = input.float(10, "Compression Percentile", minval=1, maxval=30, step=1, group=GRP_SQ)
+
+string GRP_TWS  = "Twist Detection"
+bool   showTwist  = input.bool(true, "Show Twist Events", group=GRP_TWS, tooltip="Mark ribbon inversion points where alignment flips")
+int    twistConf  = input.int(2, "Twist Confirmation",   minval=1, maxval=5, group=GRP_TWS, tooltip="Bars of sustained inversion to confirm twist")
+
+string GRP_VIS  = "Optics Layer"
+bool   showFill  = input.bool(true, "Weave Fill",          group=GRP_VIS)
+bool   showLead  = input.bool(true, "Lead Filament Glow",  group=GRP_VIS)
+bool   showDash  = input.bool(true, "Command Panel",       group=GRP_VIS)
+bool   showBarC  = input.bool(false, "Candle Tinting",     group=GRP_VIS, tooltip="Tint chart candles based on trend phase")
+
+string GRP_COL  = "Chromatic Scheme"
+color  colBullS  = input.color(#0affab, "Ascent Dominant",   group=GRP_COL)
+color  colBullW  = input.color(#056b4d, "Ascent Fading",     group=GRP_COL)
+color  colBearS  = input.color(#ff2e63, "Descent Dominant",  group=GRP_COL)
+color  colBearW  = input.color(#8b1a3a, "Descent Fading",    group=GRP_COL)
+color  colSqz    = input.color(#ffa502, "Compression Tone",  group=GRP_COL)
+color  colTwist  = input.color(#a29bfe, "Twist Accent",      group=GRP_COL)
+color  colSurge  = input.color(#00d2ff, "Surge Accent",      group=GRP_COL)
+color  colFan    = input.color(#00e676, "Fan Accent",        group=GRP_COL)
+
+string GRP_SIG   = "Signal Architecture"
+bool   showCross   = input.bool(true, "Weave Cross Signals",     group=GRP_SIG, tooltip="Label when lead filament crosses anchor")
+bool   showTwistSig = input.bool(true, "Twist Lock Signals",     group=GRP_SIG, tooltip="Label on confirmed ribbon inversions")
+bool   showSurgeSig = input.bool(true, "Momentum Surge",         group=GRP_SIG, tooltip="Detect rapid spread expansion after compression")
+bool   showFanSig   = input.bool(true, "Filament Fan",           group=GRP_SIG, tooltip="Mark when all filaments achieve perfect sequential order")
+bool   showSnapSig  = input.bool(true, "Snap Recoil",            group=GRP_SIG, tooltip="Detect price snapping back through the ribbon midpoint")
+bool   showDriftSig = input.bool(true, "Drift Fade",             group=GRP_SIG, tooltip="Warn when trend strength decays below dormant threshold")
+
+// ──────────────────── MORPHIC PERIOD ──────────────────────────────────────
+float atrS = ta.atr(atrFast)
+float atrL = ta.atr(atrSlowP)
+float volReg   = atrL != 0 ? atrS / atrL : 1.0
+float adaptMult = adaptive ? math.max(adaptMin, math.min(adaptMax, 1.5 / volReg)) : 1.0
+
+// ──────────────────── MA CALCULATION ────────────────────────────────────
+// SMA helper using for-loop (works with series int length)
+flexSMA(float src, int len) =>
+    float s = 0.0
+    int n = math.max(2, len)
+    for j = 0 to n - 1
+        s += nz(src[j])
+    s / n
+
+// Periods (series int due to adaptive ATR-based multiplier)
+int per01 = math.max(2, math.round((basePer + 0  * spacing) * adaptMult))
+int per02 = math.max(2, math.round((basePer + 1  * spacing) * adaptMult))
+int per03 = math.max(2, math.round((basePer + 2  * spacing) * adaptMult))
+int per04 = math.max(2, math.round((basePer + 3  * spacing) * adaptMult))
+int per05 = math.max(2, math.round((basePer + 4  * spacing) * adaptMult))
+int per06 = math.max(2, math.round((basePer + 5  * spacing) * adaptMult))
+int per07 = math.max(2, math.round((basePer + 6  * spacing) * adaptMult))
+int per08 = math.max(2, math.round((basePer + 7  * spacing) * adaptMult))
+int per09 = math.max(2, math.round((basePer + 8  * spacing) * adaptMult))
+int per10 = math.max(2, math.round((basePer + 9  * spacing) * adaptMult))
+int per11 = math.max(2, math.round((basePer + 10 * spacing) * adaptMult))
+int per12 = math.max(2, math.round((basePer + 11 * spacing) * adaptMult))
+
+// Inline EMA per MA (each var is isolated at global scope)
+var float e01 = na
+var float e02 = na
+var float e03 = na
+var float e04 = na
+var float e05 = na
+var float e06 = na
+var float e07 = na
+var float e08 = na
+var float e09 = na
+var float e10 = na
+var float e11 = na
+var float e12 = na
+float a01 = 2.0 / (per01 + 1)
+float a02 = 2.0 / (per02 + 1)
+float a03 = 2.0 / (per03 + 1)
+float a04 = 2.0 / (per04 + 1)
+float a05 = 2.0 / (per05 + 1)
+float a06 = 2.0 / (per06 + 1)
+float a07 = 2.0 / (per07 + 1)
+float a08 = 2.0 / (per08 + 1)
+float a09 = 2.0 / (per09 + 1)
+float a10 = 2.0 / (per10 + 1)
+float a11 = 2.0 / (per11 + 1)
+float a12 = 2.0 / (per12 + 1)
+e01 := na(e01) ? close : a01 * close + (1 - a01) * e01
+e02 := na(e02) ? close : a02 * close + (1 - a02) * e02
+e03 := na(e03) ? close : a03 * close + (1 - a03) * e03
+e04 := na(e04) ? close : a04 * close + (1 - a04) * e04
+e05 := na(e05) ? close : a05 * close + (1 - a05) * e05
+e06 := na(e06) ? close : a06 * close + (1 - a06) * e06
+e07 := na(e07) ? close : a07 * close + (1 - a07) * e07
+e08 := na(e08) ? close : a08 * close + (1 - a08) * e08
+e09 := na(e09) ? close : a09 * close + (1 - a09) * e09
+e10 := na(e10) ? close : a10 * close + (1 - a10) * e10
+e11 := na(e11) ? close : a11 * close + (1 - a11) * e11
+e12 := na(e12) ? close : a12 * close + (1 - a12) * e12
+
+// Inline RMA per MA (for SMMA mode)
+var float r01 = na
+var float r02 = na
+var float r03 = na
+var float r04 = na
+var float r05 = na
+var float r06 = na
+var float r07 = na
+var float r08 = na
+var float r09 = na
+var float r10 = na
+var float r11 = na
+var float r12 = na
+float ra01 = 1.0 / per01
+float ra02 = 1.0 / per02
+float ra03 = 1.0 / per03
+float ra04 = 1.0 / per04
+float ra05 = 1.0 / per05
+float ra06 = 1.0 / per06
+float ra07 = 1.0 / per07
+float ra08 = 1.0 / per08
+float ra09 = 1.0 / per09
+float ra10 = 1.0 / per10
+float ra11 = 1.0 / per11
+float ra12 = 1.0 / per12
+r01 := na(r01) ? close : ra01 * close + (1 - ra01) * r01
+r02 := na(r02) ? close : ra02 * close + (1 - ra02) * r02
+r03 := na(r03) ? close : ra03 * close + (1 - ra03) * r03
+r04 := na(r04) ? close : ra04 * close + (1 - ra04) * r04
+r05 := na(r05) ? close : ra05 * close + (1 - ra05) * r05
+r06 := na(r06) ? close : ra06 * close + (1 - ra06) * r06
+r07 := na(r07) ? close : ra07 * close + (1 - ra07) * r07
+r08 := na(r08) ? close : ra08 * close + (1 - ra08) * r08
+r09 := na(r09) ? close : ra09 * close + (1 - ra09) * r09
+r10 := na(r10) ? close : ra10 * close + (1 - ra10) * r10
+r11 := na(r11) ? close : ra11 * close + (1 - ra11) * r11
+r12 := na(r12) ? close : ra12 * close + (1 - ra12) * r12
+
+// Select MA type
+float ma01 = maType == "SMA" ? flexSMA(close, per01) : maType == "SMMA" ? r01 : e01
+float ma02 = maType == "SMA" ? flexSMA(close, per02) : maType == "SMMA" ? r02 : e02
+float ma03 = maType == "SMA" ? flexSMA(close, per03) : maType == "SMMA" ? r03 : e03
+float ma04 = maType == "SMA" ? flexSMA(close, per04) : maType == "SMMA" ? r04 : e04
+float ma05 = maType == "SMA" ? flexSMA(close, per05) : maType == "SMMA" ? r05 : e05
+float ma06 = maType == "SMA" ? flexSMA(close, per06) : maType == "SMMA" ? r06 : e06
+float ma07 = maType == "SMA" ? flexSMA(close, per07) : maType == "SMMA" ? r07 : e07
+float ma08 = maType == "SMA" ? flexSMA(close, per08) : maType == "SMMA" ? r08 : e08
+float ma09 = maType == "SMA" ? flexSMA(close, per09) : maType == "SMMA" ? r09 : e09
+float ma10 = maType == "SMA" ? flexSMA(close, per10) : maType == "SMMA" ? r10 : e10
+float ma11 = maType == "SMA" ? flexSMA(close, per11) : maType == "SMMA" ? r11 : e11
+float ma12 = maType == "SMA" ? flexSMA(close, per12) : maType == "SMMA" ? r12 : e12
+
+// Reference lines for trend determination
+float fastest = ma01
+float slowest = ribbonN >= 12 ? ma12 : ribbonN >= 11 ? ma11 : ribbonN >= 10 ? ma10 : ribbonN >= 9 ? ma09 : ribbonN >= 8 ? ma08 : ribbonN >= 7 ? ma07 : ribbonN >= 6 ? ma06 : ribbonN >= 5 ? ma05 : ribbonN >= 4 ? ma04 : ma03
+
+// ──────────────────── TREND SCORING ─────────────────────────────────────────
+bool bullTrend = fastest > slowest
+bool rising    = ta.rising(fastest, 2)
+bool falling   = ta.falling(fastest, 2)
+
+// Four-state colour (wolfpack phase logic)
+color trendCol = bullTrend and rising     ? colBullS :
+                 bullTrend and not rising  ? colBullW :
+                 not bullTrend and falling ? colBearS : colBearW
+
+// Ribbon spread — normalised by ATR as trend strength proxy
+float atrRef    = ta.atr(14)
+float spread    = math.abs(fastest - slowest)
+float spreadN   = atrRef != 0 ? spread / atrRef : 0.0
+float spreadPct = ta.percentrank(spreadN, 100)
+
+string strengthLabel = spreadPct > 70 ? "DOMINANT" : spreadPct > 30 ? "DEVELOPING" : "DORMANT"
+
+// Ribbon alignment score — percentage of MAs in correct sequential order
+alignCount(bool isBull) =>
+    int cnt = 0
+    if ribbonN >= 3 and ((isBull and ma01 > ma02 and ma02 > ma03) or (not isBull and ma01 < ma02 and ma02 < ma03))
+        cnt += 1
+    if ribbonN >= 5 and ((isBull and ma03 > ma04 and nz(ma04) > nz(ma05)) or (not isBull and ma03 < ma04 and nz(ma04) < nz(ma05)))
+        cnt += 1
+    if ribbonN >= 7 and ((isBull and nz(ma05) > nz(ma06) and nz(ma06) > nz(ma07)) or (not isBull and nz(ma05) < nz(ma06) and nz(ma06) < nz(ma07)))
+        cnt += 1
+    if ribbonN >= 9 and ((isBull and nz(ma07) > nz(ma08) and nz(ma08) > nz(ma09)) or (not isBull and nz(ma07) < nz(ma08) and nz(ma08) < nz(ma09)))
+        cnt += 1
+    cnt
+
+int maxSegs   = ribbonN >= 9 ? 4 : ribbonN >= 7 ? 3 : ribbonN >= 5 ? 2 : 1
+int alignSegs = alignCount(bullTrend)
+float alignPct = maxSegs > 0 ? alignSegs * 100.0 / maxSegs : 0
+string alignLabel = alignPct >= 100 ? "LOCKED" : alignPct >= 50 ? "PARTIAL" : "SCATTERED"
+
+// Spread momentum — rate of change for early expansion/contraction
+float spreadRoc = spreadN - nz(spreadN[3])
+string spreadDir = spreadRoc > 0 ? "EXPANDING" : spreadRoc < 0 ? "CONTRACTING" : "FLAT"
+
+// ──────────────────── COMPRESSION CHAMBER ──────────────────────────────────
+float spreadRank = ta.percentrank(spread, sqLen)
+bool  isSqueeze  = spreadRank <= sqPctile
+
+bgcolor(showSqueeze and isSqueeze ? color.new(colSqz, 93) : na, title="Compression Aura")
+
+// ──────────────────── TWIST DETECTION ──────────────────────────────────────
+bool twistBull = ta.crossover(fastest, slowest)
+bool twistBear = ta.crossunder(fastest, slowest)
+var int twistBullCnt = 0
+var int twistBearCnt = 0
+
+if bullTrend
+    twistBullCnt += 1
+    twistBearCnt := 0
+else
+    twistBearCnt += 1
+    twistBullCnt := 0
+
+bool confirmedTwistBull = twistBullCnt == twistConf
+bool confirmedTwistBear = twistBearCnt == twistConf
+
+// Candle tinting
+barcolor(showBarC ? trendCol : na, title="Phase Candle Tint")
+
+// ──────────────────── PLOTS ─────────────────────────────────────────────────
+int leadW = showLead ? 3 : 1
+
+p01 = plot(ma01, "MA 1",  color=showLead ? trendCol : color.new(trendCol, 30), linewidth=leadW)
+p02 = plot(ma02, "MA 2",  color=color.new(trendCol, 30), linewidth=1)
+p03 = plot(ma03, "MA 3",  color=color.new(trendCol, 40), linewidth=1)
+p04 = plot(ma04, "MA 4",  color=color.new(trendCol, 48), linewidth=1)
+p05 = plot(ma05, "MA 5",  color=color.new(trendCol, 54), linewidth=1)
+p06 = plot(ma06, "MA 6",  color=color.new(trendCol, 60), linewidth=1)
+p07 = plot(ma07, "MA 7",  color=color.new(trendCol, 65), linewidth=1)
+p08 = plot(ma08, "MA 8",  color=color.new(trendCol, 70), linewidth=1)
+p09 = plot(ma09, "MA 9",  color=color.new(trendCol, 74), linewidth=1)
+p10 = plot(ma10, "MA 10", color=color.new(trendCol, 78), linewidth=1)
+p11 = plot(ma11, "MA 11", color=color.new(trendCol, 82), linewidth=1)
+p12 = plot(ma12, "MA 12", color=color.new(trendCol, 86), linewidth=1)
+
+// Weave fill between fastest and a mid-ribbon filament
+fill(p01, p08, color=showFill ? color.new(trendCol, 88) : na, title="Weave Core Fill")
+
+// ──────────────────── SIGNAL DETECTION ───────────────────────────────────────
+float atrVal = nz(atrRef, 1)
+
+// Cooldown counters — prevent any signal from repeating within N bars of itself
+var int cdCross = 0
+var int cdTwist = 0
+var int cdSurge = 0
+var int cdFan   = 0
+var int cdSnap  = 0
+var int cdDrift = 0
+int CD_CROSS = 8
+int CD_TWIST = 10
+int CD_SURGE = 12
+int CD_FAN   = 10
+int CD_SNAP  = 8
+int CD_DRIFT = 15
+cdCross := math.max(0, cdCross - 1)
+cdTwist := math.max(0, cdTwist - 1)
+cdSurge := math.max(0, cdSurge - 1)
+cdFan   := math.max(0, cdFan   - 1)
+cdSnap  := math.max(0, cdSnap  - 1)
+cdDrift := math.max(0, cdDrift - 1)
+
+// Weave Cross — lead filament crosses anchor (core directional signal)
+bool bullCross = ta.crossover(fastest, slowest)  and barstate.isconfirmed and cdCross == 0
+bool bearCross = ta.crossunder(fastest, slowest) and barstate.isconfirmed and cdCross == 0
+
+// Momentum Surge — compression release into expansion (structural breakout)
+bool sqzRelease   = not isSqueeze and isSqueeze[1]
+bool surgeUp      = sqzRelease and spreadRoc > 0 and bullTrend and barstate.isconfirmed and cdSurge == 0
+bool surgeDn      = sqzRelease and spreadRoc > 0 and not bullTrend and barstate.isconfirmed and cdSurge == 0
+
+// Filament Fan — all filaments snap into perfect sequential order (trend confirmation)
+bool fanBull = alignPct >= 100 and nz(alignPct[1]) < 100 and bullTrend and barstate.isconfirmed and cdFan == 0
+bool fanBear = alignPct >= 100 and nz(alignPct[1]) < 100 and not bullTrend and barstate.isconfirmed and cdFan == 0
+
+// Twist Lock — ribbon inversion confirmed (edge-detected: fires only once per twist event)
+bool twistBullEdge = confirmedTwistBull and not confirmedTwistBull[1] and barstate.isconfirmed and cdTwist == 0
+bool twistBearEdge = confirmedTwistBear and not confirmedTwistBear[1] and barstate.isconfirmed and cdTwist == 0
+
+// Snap Recoil — price crosses ribbon midpoint against trend (mean reversion)
+// Requires minimum ribbon width to avoid noise in tight ranges
+float ribbonMid = (fastest + slowest) / 2
+bool snapBull   = ta.crossover(close, ribbonMid)  and not bullTrend and spreadN > 0.3 and barstate.isconfirmed and cdSnap == 0
+bool snapBear   = ta.crossunder(close, ribbonMid) and bullTrend and spreadN > 0.3 and barstate.isconfirmed and cdSnap == 0
+
+// Drift Fade — trend force decays to dormant (exhaustion warning)
+bool driftWarn = spreadPct <= 15 and nz(spreadPct[1]) > 15 and barstate.isconfirmed and cdDrift == 0
+
+// Arm cooldowns when signals fire
+if bullCross or bearCross
+    cdCross := CD_CROSS
+if surgeUp or surgeDn
+    cdSurge := CD_SURGE
+if fanBull or fanBear
+    cdFan := CD_FAN
+if twistBullEdge or twistBearEdge
+    cdTwist := CD_TWIST
+if snapBull or snapBear
+    cdSnap := CD_SNAP
+if driftWarn
+    cdDrift := CD_DRIFT
+
+// Global anti-overlap: only one label per bar (priority: Cross > Surge > Twist > Fan > Snap > Drift)
+bool barUsed = false
+
+bool doCross    = (bullCross or bearCross) and not barUsed
+bool doSurge    = (surgeUp or surgeDn) and not barUsed and not doCross
+bool doTwist    = (twistBullEdge or twistBearEdge) and not barUsed and not doCross and not doSurge
+bool doFan      = (fanBull or fanBear) and not barUsed and not doCross and not doSurge and not doTwist
+bool doSnap     = (snapBull or snapBear) and not barUsed and not doCross and not doSurge and not doTwist and not doFan
+bool doDrift    = driftWarn and not barUsed and not doCross and not doSurge and not doTwist and not doFan and not doSnap
+
+// ──────────────────── LABEL SIGNALS ─────────────────────────────────────────
+// Weave Cross — below/above price at ribbon edge
+if showCross and doCross and bullCross
+    label.new(bar_index, low - atrVal * 0.5, "IGNITE", style=label.style_label_up, color=color.new(colBullS, 10), textcolor=color.rgb(5, 20, 15), size=size.tiny, tooltip="Ascent cross — lead filament surged above anchor | Spread: " + str.tostring(spreadN, "#.##") + " | Align: " + str.tostring(alignPct, "#") + "%")
+if showCross and doCross and bearCross
+    label.new(bar_index, high + atrVal * 0.5, "QUENCH", style=label.style_label_down, color=color.new(colBearS, 10), textcolor=color.rgb(255, 240, 245), size=size.tiny, tooltip="Descent cross — lead filament dropped below anchor | Spread: " + str.tostring(spreadN, "#.##") + " | Align: " + str.tostring(alignPct, "#") + "%")
+
+// Twist Lock — further from price to avoid cross overlap
+if showTwistSig and doTwist and twistBullEdge
+    label.new(bar_index, low - atrVal * 1.0, "TWIST LOCK", style=label.style_label_up, color=color.new(colTwist, 10), textcolor=color.rgb(240, 235, 255), size=size.tiny, tooltip="Bullish twist confirmed — ribbon inversion sustained " + str.tostring(twistConf) + " bars | Phase: " + (rising ? "RISING" : "FADING"))
+if showTwistSig and doTwist and twistBearEdge
+    label.new(bar_index, high + atrVal * 1.0, "TWIST LOCK", style=label.style_label_down, color=color.new(colTwist, 10), textcolor=color.rgb(240, 235, 255), size=size.tiny, tooltip="Bearish twist confirmed — ribbon inversion sustained " + str.tostring(twistConf) + " bars | Phase: " + (falling ? "FALLING" : "FADING"))
+
+// Momentum Surge — furthest from price (structural breakout, high importance)
+if showSurgeSig and doSurge and surgeUp
+    label.new(bar_index, low - atrVal * 1.4, "SURGE", style=label.style_label_up, color=color.new(colSurge, 5), textcolor=color.rgb(0, 15, 30), size=size.tiny, tooltip="Bullish momentum surge — compression released into expansion | Force: " + strengthLabel + " " + str.tostring(spreadPct, "#") + "%")
+if showSurgeSig and doSurge and surgeDn
+    label.new(bar_index, high + atrVal * 1.4, "SURGE", style=label.style_label_down, color=color.new(colSurge, 5), textcolor=color.rgb(0, 15, 30), size=size.tiny, tooltip="Bearish momentum surge — compression released into expansion | Force: " + strengthLabel + " " + str.tostring(spreadPct, "#") + "%")
+
+// Filament Fan — near price (confirmation, subtle)
+if showFanSig and doFan and fanBull
+    label.new(bar_index, low - atrVal * 0.3, "FAN", style=label.style_label_up, color=color.new(colFan, 8), textcolor=color.rgb(0, 25, 10), size=size.tiny, tooltip="Bullish filament fan — all MAs in perfect ascending order | Morph: " + str.tostring(adaptMult, "#.##") + "x")
+if showFanSig and doFan and fanBear
+    label.new(bar_index, high + atrVal * 0.3, "FAN", style=label.style_label_down, color=color.new(colFan, 8), textcolor=color.rgb(0, 25, 10), size=size.tiny, tooltip="Bearish filament fan — all MAs in perfect descending order | Morph: " + str.tostring(adaptMult, "#.##") + "x")
+
+// Snap Recoil — mid distance (counter-trend, placed at ribbon midpoint zone)
+if showSnapSig and doSnap and snapBull
+    label.new(bar_index, low - atrVal * 0.7, "SNAP", style=label.style_label_up, color=color.new(colSurge, 25), textcolor=color.rgb(200, 245, 255), size=size.tiny, tooltip="Bullish snap recoil — price crossed ribbon midpoint against bearish trend | Spread: " + str.tostring(spreadN, "#.##"))
+if showSnapSig and doSnap and snapBear
+    label.new(bar_index, high + atrVal * 0.7, "SNAP", style=label.style_label_down, color=color.new(colBearS, 25), textcolor=color.rgb(255, 220, 230), size=size.tiny, tooltip="Bearish snap recoil — price crossed ribbon midpoint against bullish trend | Spread: " + str.tostring(spreadN, "#.##"))
+
+// Drift Fade — warning placed opposite to trend direction
+if showDriftSig and doDrift
+    color driftCol = bullTrend ? color.new(colBullW, 20) : color.new(colBearW, 20)
+    label.new(bar_index, bullTrend ? high + atrVal * 0.5 : low - atrVal * 0.5, "DRIFT", style=bullTrend ? label.style_label_down : label.style_label_up, color=driftCol, textcolor=color.rgb(180, 175, 160), size=size.tiny, tooltip="Drift fade — trend force decayed to dormant (" + str.tostring(spreadPct, "#") + "%) | Weave losing conviction")
+
+// ──────────────────── COMMAND PANEL (DASHBOARD) ───────────────────────────
+color dashBg   = color.rgb(8, 8, 22, 5)
+color dashBord = color.rgb(40, 40, 65)
+color dashLbl  = color.rgb(140, 145, 175)
+color dashDim  = color.rgb(85, 88, 110)
+
+var table htwDash = table.new(position.top_right, 2, 12, bgcolor=dashBg, border_color=dashBord, border_width=1, frame_width=1, frame_color=dashBord)
+
+if showDash and barstate.islast
+    string tDir = bullTrend ? "ASCENT" : "DESCENT"
+    // Row 0 — Title
+    table.cell(htwDash, 0, 0, "HTW [JOAT]",   text_color=trendCol, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(htwDash, 1, 0, tDir,             text_color=trendCol, text_size=size.small, text_font_family=font.family_monospace)
+    // Row 1 — Phase
+    string phaseStr = bullTrend and rising ? "DOMINANT RISE" : bullTrend and not rising ? "FADING RISE" : not bullTrend and falling ? "DOMINANT FALL" : "FADING FALL"
+    color phaseCol = bullTrend and rising ? colBullS : bullTrend and not rising ? colBullW : not bullTrend and falling ? colBearS : colBearW
+    table.cell(htwDash, 0, 1, "PHASE",         text_color=dashLbl, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(htwDash, 1, 1, phaseStr,         text_color=phaseCol, text_size=size.small, text_font_family=font.family_monospace)
+    // Row 2 — Strength
+    color forceCol = spreadPct > 70 ? colBullS : spreadPct > 30 ? colSurge : colBearW
+    table.cell(htwDash, 0, 2, "FORCE",         text_color=dashLbl, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(htwDash, 1, 2, strengthLabel + " " + str.tostring(spreadPct, "#") + "%", text_color=forceCol, text_size=size.small, text_font_family=font.family_monospace)
+    // Row 3 — Spread
+    table.cell(htwDash, 0, 3, "APERTURE",      text_color=dashLbl, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(htwDash, 1, 3, str.tostring(spreadN, "#.##") + " (" + spreadDir + ")", text_color=spreadRoc > 0 ? colFan : spreadRoc < 0 ? colBearS : dashDim, text_size=size.small, text_font_family=font.family_monospace)
+    // Row 4 — Alignment
+    table.cell(htwDash, 0, 4, "ALIGNMENT",     text_color=dashLbl, text_size=size.small, text_font_family=font.family_monospace)
+    color alCol = alignPct >= 100 ? colFan : alignPct >= 50 ? colSurge : dashDim
+    table.cell(htwDash, 1, 4, alignLabel + " " + str.tostring(alignPct, "#") + "%", text_color=alCol, text_size=size.small, text_font_family=font.family_monospace)
+    // Row 5 — Morphic multiplier
+    color morphCol = adaptMult > 1.5 ? colSqz : adaptMult < 0.7 ? colSurge : dashDim
+    table.cell(htwDash, 0, 5, "MORPH",         text_color=dashLbl, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(htwDash, 1, 5, str.tostring(adaptMult, "#.##") + "x", text_color=morphCol, text_size=size.small, text_font_family=font.family_monospace)
+    // Row 6 — Compression
+    table.cell(htwDash, 0, 6, "COMPRESS",      text_color=dashLbl, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(htwDash, 1, 6, isSqueeze ? "ACTIVE" : "NONE", text_color=isSqueeze ? colSqz : dashDim, text_size=size.small, text_font_family=font.family_monospace)
+    // Row 7 — Filament config
+    table.cell(htwDash, 0, 7, "WEAVE",         text_color=dashLbl, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(htwDash, 1, 7, maType + " x" + str.tostring(ribbonN), text_color=dashDim, text_size=size.small, text_font_family=font.family_monospace)
+    // Row 8 — Vol regime
+    table.cell(htwDash, 0, 8, "VOL REG",       text_color=dashLbl, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(htwDash, 1, 8, str.tostring(volReg, "#.##"), text_color=volReg > 1.2 ? colSqz : volReg < 0.8 ? colSurge : dashDim, text_size=size.small, text_font_family=font.family_monospace)
+    // Row 9 — Ribbon midpoint
+    table.cell(htwDash, 0, 9, "MIDPOINT",      text_color=dashLbl, text_size=size.small, text_font_family=font.family_monospace)
+    string midRel = close > ribbonMid ? "ABOVE" : "BELOW"
+    color midCol = close > ribbonMid ? colBullS : colBearS
+    table.cell(htwDash, 1, 9, midRel + " " + str.tostring(ribbonMid, "#.##"), text_color=midCol, text_size=size.small, text_font_family=font.family_monospace)
+    // Row 10 — Lead period
+    table.cell(htwDash, 0, 10, "LEAD PER",     text_color=dashLbl, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(htwDash, 1, 10, str.tostring(per01), text_color=colSurge, text_size=size.small, text_font_family=font.family_monospace)
+    // Row 11 — Anchor period
+    table.cell(htwDash, 0, 11, "ANCHOR PER",   text_color=dashLbl, text_size=size.small, text_font_family=font.family_monospace)
+    table.cell(htwDash, 1, 11, str.tostring(ribbonN >= 12 ? per12 : ribbonN >= 8 ? per08 : per04), text_color=colTwist, text_size=size.small, text_font_family=font.family_monospace)
+
+// ──────────────────── ALERTS ────────────────────────────────────────────────
+alertcondition(bullCross,              title="Ascent Cross",         message="HTW: Weave turned bullish — lead filament crossed above anchor")
+alertcondition(bearCross,              title="Descent Cross",        message="HTW: Weave turned bearish — lead filament crossed below anchor")
+alertcondition(twistBullEdge,          title="Bull Twist Confirmed", message="HTW: Bullish twist confirmed — ribbon inversion sustained")
+alertcondition(twistBearEdge,          title="Bear Twist Confirmed", message="HTW: Bearish twist confirmed — ribbon inversion sustained")
+alertcondition(isSqueeze and not isSqueeze[1], title="Compression Onset",   message="HTW: Ribbon compression detected")
+alertcondition(not isSqueeze and isSqueeze[1], title="Compression Release", message="HTW: Ribbon compression released — expansion beginning")
+alertcondition(alignPct >= 100 and nz(alignPct[1]) < 100, title="Full Alignment", message="HTW: All filaments in perfect sequential alignment")
+alertcondition(surgeUp or surgeDn,     title="Momentum Surge",      message="HTW: Momentum surge — compression released into rapid expansion")
+alertcondition(fanBull or fanBear,     title="Filament Fan",         message="HTW: Filament fan — all MAs achieved perfect sequential order")
+alertcondition(snapBull or snapBear,   title="Snap Recoil",          message="HTW: Snap recoil — price crossed ribbon midpoint against trend")
+alertcondition(driftWarn,              title="Drift Fade",            message="HTW: Drift fade — trend force decayed to dormant level")
+// ══════════════════════════════════════════════════════════════════════════════
