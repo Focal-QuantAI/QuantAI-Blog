@@ -1,0 +1,123 @@
+//@version=5
+indicator(title="SMI Auto MTF", shorttitle="SMI MTF", overlay=false)
+
+// -------------------------------------------------------
+// INPUTS
+// -------------------------------------------------------
+i_override = input.bool(false, title="Manual Override")
+i_k        = input.int(13, title="K Period (manual)",      minval=1, maxval=100)
+i_smooth   = input.int(5,  title="Smooth Period (manual)", minval=1, maxval=50)
+i_signal   = input.int(5,  title="Signal Period (manual)", minval=1, maxval=50)
+i_ob       = input.float( 40.0, title="Overbought Level")
+i_os       = input.float(-40.0, title="Oversold Level")
+
+// -------------------------------------------------------
+// AUTO PARAMETERS BY TIMEFRAME
+// timeframe.period values: "15"=15m "60"=1h "240"=4h "D"=1d "W"=1w
+// -------------------------------------------------------
+tf = timeframe.period
+
+auto_k = tf == "15"  ? 5  :
+         tf == "60"  ? 9  :
+         tf == "240" ? 13 :
+         tf == "D"   ? 13 :
+         tf == "W"   ? 20 : 13
+
+auto_smooth = tf == "15"  ? 3 :
+              tf == "60"  ? 3 :
+              tf == "240" ? 5 :
+              tf == "D"   ? 5 :
+              tf == "W"   ? 7 : 5
+
+auto_signal = tf == "15"  ? 3 :
+              tf == "60"  ? 3 :
+              tf == "240" ? 5 :
+              tf == "D"   ? 5 :
+              tf == "W"   ? 7 : 5
+
+k_len      = i_override ? i_k      : auto_k
+smooth_len = i_override ? i_smooth : auto_smooth
+signal_len = i_override ? i_signal : auto_signal
+
+// -------------------------------------------------------
+// SMI CALCULATION (William Blau - double EMA smoothing)
+// -------------------------------------------------------
+hh       = ta.highest(high, k_len)
+ll       = ta.lowest(low,   k_len)
+mid      = (hh + ll) / 2.0
+diff     = close - mid
+hl_range = hh - ll
+
+s_diff  = ta.ema(ta.ema(diff,     smooth_len), smooth_len)
+s_range = ta.ema(ta.ema(hl_range, smooth_len), smooth_len)
+
+smi    = s_range != 0.0 ? 100.0 * s_diff / (0.5 * s_range) : 0.0
+sig    = ta.ema(smi, signal_len)
+hist   = smi - sig
+
+// -------------------------------------------------------
+// CROSSOVERS
+// -------------------------------------------------------
+bull_x = ta.crossover(smi,  sig)
+bear_x = ta.crossunder(smi, sig)
+
+// -------------------------------------------------------
+// COLORS
+// -------------------------------------------------------
+c_smi  = smi  >= 0.0 ? color.new(#00bcd4, 0) : color.new(#e91e63, 0)
+c_hist = hist >= 0.0 ? color.new(color.teal, 20) : color.new(color.red, 20)
+
+// -------------------------------------------------------
+// PLOTS
+// -------------------------------------------------------
+plot(hist, title="Histogram", style=plot.style_histogram, color=c_hist, linewidth=2)
+plot(smi,  title="SMI",    color=c_smi,                     linewidth=2)
+plot(sig,  title="Signal", color=color.new(color.orange, 0), linewidth=1)
+
+hline( i_ob, "Overbought", color=color.new(color.red,   50), linestyle=hline.style_dashed)
+hline( i_os, "Oversold",   color=color.new(color.green, 50), linestyle=hline.style_dashed)
+hline(  0.0, "Zero",       color=color.new(color.gray,  60), linestyle=hline.style_solid)
+
+bgcolor(smi >  i_ob ? color.new(color.red,   90) : na, title="OB Zone")
+bgcolor(smi <  i_os ? color.new(color.green, 90) : na, title="OS Zone")
+
+plotshape(bull_x, title="Bull Cross", location=location.bottom,
+          style=shape.triangleup,   size=size.tiny, color=color.new(color.lime, 0))
+plotshape(bear_x, title="Bear Cross", location=location.top,
+          style=shape.triangledown, size=size.tiny, color=color.new(color.red,  0))
+
+// -------------------------------------------------------
+// INFO TABLE
+// -------------------------------------------------------
+var table t = table.new(position.top_right, 2, 5,
+     border_width=1, border_color=color.new(color.gray, 50))
+
+if barstate.islast
+    bg1 = color.new(#263238, 0)
+    bg2 = color.new(#37474f, 0)
+    tc1 = color.white
+    tc2 = color.new(color.yellow, 0)
+
+    mode_str = i_override ? "MANUAL" : "AUTO"
+    mode_col = i_override ? color.new(color.orange, 0) : color.new(color.lime, 0)
+
+    table.cell(t, 0, 0, "Mode",    text_color=tc1, bgcolor=bg1)
+    table.cell(t, 1, 0, mode_str,  text_color=mode_col, bgcolor=bg1)
+    table.cell(t, 0, 1, "TF",      text_color=tc1, bgcolor=bg1)
+    table.cell(t, 1, 1, tf,        text_color=tc2, bgcolor=bg2)
+    table.cell(t, 0, 2, "K",       text_color=tc1, bgcolor=bg1)
+    table.cell(t, 1, 2, str.tostring(k_len),      text_color=tc2, bgcolor=bg2)
+    table.cell(t, 0, 3, "Smooth",  text_color=tc1, bgcolor=bg1)
+    table.cell(t, 1, 3, str.tostring(smooth_len), text_color=tc2, bgcolor=bg2)
+    table.cell(t, 0, 4, "Signal",  text_color=tc1, bgcolor=bg1)
+    table.cell(t, 1, 4, str.tostring(signal_len), text_color=tc2, bgcolor=bg2)
+
+// -------------------------------------------------------
+// ALERTS
+// -------------------------------------------------------
+alertcondition(bull_x,                    title="Bull Cross",      message="SMI crossed above Signal")
+alertcondition(bear_x,                    title="Bear Cross",      message="SMI crossed below Signal")
+alertcondition(ta.crossover(smi,  i_ob),  title="Enter OB",        message="SMI entered Overbought")
+alertcondition(ta.crossunder(smi, i_os),  title="Enter OS",        message="SMI entered Oversold")
+alertcondition(ta.crossover(smi,  0.0),   title="Zero Cross Up",   message="SMI crossed zero up")
+alertcondition(ta.crossunder(smi, 0.0),   title="Zero Cross Down", message="SMI crossed zero down")
