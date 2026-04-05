@@ -1,0 +1,163 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © KeyAlgos
+//@version=6
+indicator("Adaptive Regime Filter + Divergence (AER-VN) [KEYALGOS]", shorttitle="AER+Div [KEYALGOS]", overlay=false, format=format.price, precision=2)
+
+// ========================================================================= //
+// =============================== INPUTS ================================== //
+// ========================================================================= //
+grp_er    = "Efficiency Ratio Settings"
+length    = input.int(10, title="ER Lookback (N)", minval=2, group=grp_er)
+baseEr    = input.float(0.25, title="Base ER Threshold", step=0.05, minval=0.05, maxval=0.8, group=grp_er)
+maxErCap  = input.float(0.65, title="Max Threshold Cap", step=0.05, minval=0.1, maxval=0.99, group=grp_er)
+
+grp_vol   = "Volatility Normalization"
+atrLength = input.int(14, title="ATR Length", minval=1, group=grp_vol)
+atrMeanLen= input.int(50, title="ATR Mean Lookback", minval=5, group=grp_vol)
+
+grp_div   = "Divergence Settings"
+divLength = input.int(10, title="Swing Definition Length", minval=3, group=grp_div)
+
+// Marker Toggles
+showReg   = input.bool(true, title="Show Regular Div Markers", group=grp_div)
+showHid   = input.bool(true, title="Show Hidden Div Markers", group=grp_div)
+
+// Line Toggles
+showRegBearLine = input.bool(true, title="Line: Regular Bearish", group=grp_div)
+showRegBullLine = input.bool(true, title="Line: Regular Bullish", group=grp_div)
+showHidBearLine = input.bool(true, title="Line: Hidden Bearish", group=grp_div)
+showHidBullLine = input.bool(true, title="Line: Hidden Bullish", group=grp_div)
+
+grp_vis   = "Visuals"
+showBars  = input.bool(true, title="Color Price Bars", group=grp_vis)
+
+// ========================================================================= //
+// ======================= CORE AER + VOLATILITY =========================== //
+// ========================================================================= //
+
+float displacement = math.abs(close - close[length])
+float pathDistance = math.sum(math.abs(close - close[1]), length)
+float er = pathDistance != 0 ? (displacement / pathDistance) : 0.0
+
+float currentAtr = ta.atr(atrLength)
+float meanAtr    = ta.sma(currentAtr, atrMeanLen)
+float atrRatio   = meanAtr != 0 ? (currentAtr / meanAtr) : 1.0
+
+float rawThreshold     = baseEr * atrRatio
+float dynamicThreshold = math.min(rawThreshold, maxErCap)
+
+// ========================================================================= //
+// ======================= REGIME CLASSIFICATION =========================== //
+// ========================================================================= //
+
+bool isTrending  = er > dynamicThreshold
+bool isUptrend   = isTrending and (close > close[length])
+bool isDowntrend = isTrending and (close < close[length])
+
+bool isNonTrending   = er <= dynamicThreshold
+bool isChop          = isNonTrending and (currentAtr > meanAtr)
+bool isConsolidation = isNonTrending and (currentAtr <= meanAtr)
+
+color colUp   = color.new(color.teal, 0)
+color colDown = color.new(color.maroon, 0)
+color colChop = color.new(color.orange, 0)
+color colCons = color.new(color.gray, 0)
+
+color regimeColor = switch
+    isUptrend       => colUp
+    isDowntrend     => colDown
+    isChop          => colChop
+    isConsolidation => colCons
+    => color.gray
+
+barcolor(showBars ? regimeColor : na)
+
+// ========================================================================= //
+// ================== ZERO-LAG DIVERGENCE DETECTION ======================== //
+// ========================================================================= //
+
+bool swingHighConfirm = (close[1] == ta.highest(close, divLength)[1]) and (close < close[1])
+bool swingLowConfirm  = (close[1] == ta.lowest(close, divLength)[1])  and (close > close[1])
+
+var float lastHighPrice = na
+var float lastHighER    = na
+var int   lastHighBar   = na
+
+var float lastLowPrice  = na
+var float lastLowER     = na
+var int   lastLowBar    = na
+
+bool regBear = false
+bool regBull = false
+bool hidBear = false
+bool hidBull = false
+
+if swingHighConfirm
+    float currentHighPrice = close[1]
+    float currentHighER    = er[1]
+    int   currentHighBar   = bar_index[1]
+    
+    if not na(lastHighPrice)
+        // Reg Bearish: Price Higher High, ER Lower High
+        if (currentHighPrice > lastHighPrice) and (currentHighER < lastHighER)
+            regBear := true
+            if showRegBearLine
+                line.new(lastHighBar, lastHighER, currentHighBar, currentHighER, color=color.red, style=line.style_dotted, width=2)
+                
+        // Hidden Bearish: Price Lower High, ER Higher High
+        if (currentHighPrice < lastHighPrice) and (currentHighER > lastHighER)
+            hidBear := true
+            if showHidBearLine
+                line.new(lastHighBar, lastHighER, currentHighBar, currentHighER, color=color.orange, style=line.style_dotted, width=2)
+            
+    lastHighPrice := currentHighPrice
+    lastHighER    := currentHighER
+    lastHighBar   := currentHighBar
+
+if swingLowConfirm
+    float currentLowPrice = close[1]
+    float currentLowER    = er[1]
+    int   currentLowBar   = bar_index[1]
+    
+    if not na(lastLowPrice)
+        // Reg Bullish: Price Lower Low, ER Higher Low
+        if (currentLowPrice < lastLowPrice) and (currentLowER > lastLowER)
+            regBull := true
+            if showRegBullLine
+                line.new(lastLowBar, lastLowER, currentLowBar, currentLowER, color=color.lime, style=line.style_dotted, width=2)
+                
+        // Hidden Bullish: Price Higher Low, ER Lower Low
+        if (currentLowPrice > lastLowPrice) and (currentLowER < lastLowER)
+            hidBull := true
+            if showHidBullLine
+                line.new(lastLowBar, lastLowER, currentLowBar, currentLowER, color=color.aqua, style=line.style_dotted, width=2)
+            
+    lastLowPrice := currentLowPrice
+    lastLowER    := currentLowER
+    lastLowBar   := currentLowBar
+
+// ========================================================================= //
+// ============================== PLOTTING ================================= //
+// ========================================================================= //
+
+// Base Oscillator
+plot(er, title="Efficiency Ratio", color=regimeColor, linewidth=2, style=plot.style_line)
+plot(dynamicThreshold, title="Dynamic Threshold", color=color.new(color.white, 50), linewidth=1, style=plot.style_cross)
+hline(baseEr, title="Base Threshold", color=color.new(color.gray, 50), linestyle=hline.style_dotted)
+
+// Divergence Visuals (Shapes exactly on the ER line, set to tiny)
+plotshape(showReg and regBear ? er[1] : na, title="Regular Bearish", location=location.absolute, color=color.red, style=shape.circle, size=size.tiny, offset=-1)
+plotshape(showReg and regBull ? er[1] : na, title="Regular Bullish", location=location.absolute, color=color.lime, style=shape.circle, size=size.tiny, offset=-1)
+
+plotshape(showHid and hidBear ? er[1] : na, title="Hidden Bearish", location=location.absolute, color=color.orange, style=shape.circle, size=size.tiny, offset=-1)
+plotshape(showHid and hidBull ? er[1] : na, title="Hidden Bullish", location=location.absolute, color=color.aqua, style=shape.circle, size=size.tiny, offset=-1)
+
+// Dashboard States
+plotchar(isUptrend, title="State: Uptrend", char="", color=colUp, display=display.data_window)
+plotchar(isDowntrend, title="State: Downtrend", char="", color=colDown, display=display.data_window)
+plotchar(isChop, title="State: Choppiness", char="", color=colChop, display=display.data_window)
+plotchar(isConsolidation, title="State: Consol", char="", color=colCons, display=display.data_window)
+
+// Alerts
+alertcondition(regBear, title="Regular Bearish Divergence", message="ER Bearish Divergence Detected")
+alertcondition(regBull, title="Regular Bullish Divergence", message="ER Bullish Divergence Detected")
