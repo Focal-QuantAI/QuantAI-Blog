@@ -1,0 +1,427 @@
+//@version=6
+// ══════════════════════════════════════════════════════════
+// DYNAMIC SWING VWAP [WillyAlgoTrader]
+// ══════════════════════════════════════════════════════════
+// Author:  Willy | WillyAlgoTrader
+// Version: 3.4.1
+
+indicator(
+    title               = "Dynamic Swing VWAP [WillyAlgoTrader]",
+    shorttitle          = "DS-VWAP",
+    overlay             = true,
+    max_bars_back       = 5000,
+    max_labels_count    = 500,
+    max_polylines_count = 100)
+
+// ══════════════════════════════════════
+// CONSTANTS
+// ══════════════════════════════════════
+GRP_MAIN   = "⚙️ Main Settings"
+GRP_BANDS  = "📐 Bands"
+GRP_VISUAL = "🎨 Visual"
+GRP_DASH   = "📊 Dashboard"
+GRP_ALERT  = "🔔 Alerts"
+GRP_COLORS = "🎨 Colors"
+
+INDICATOR_VERSION = "v3.4.1"
+
+// ══════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════
+prdInput          = input.int(55, "Swing Period", minval = 2, group = GRP_MAIN, tooltip = "Number of bars used to detect swing highs and lows.\n• Larger = bigger, more significant swings\n• Smaller = more frequent swings\n• Recommended: 20–80")
+baseAptInput      = input.float(21.0, "Adaptive Price Tracking", minval = 1.0, step = 1.0, group = GRP_MAIN, tooltip = "Controls how quickly VWAP adjusts to new price.\n• Lower = tighter to price, faster\n• Higher = smoother, slower\n• Recommended: 10–50")
+useAdaptInput     = input.bool(false, "Adapt APT by ATR Ratio", group = GRP_MAIN, tooltip = "When enabled, tracking speed changes automatically\nbased on market volatility.\n• High volatility → faster tracking\n• Low volatility → smoother line")
+volBiasInput      = input.float(10.0, "Volatility Bias", minval = 0.1, step = 0.1, group = GRP_MAIN, tooltip = "How strongly volatility influences tracking speed.\n• Higher = more responsive to volatility\n• Recommended: 5–15")
+srcInput          = input.source(hlc3, "VWAP Source", group = GRP_MAIN, tooltip = "Price source for VWAP calculation.\n• hlc3: standard (H+L+C)/3\n• ohlc4: includes open, better for gaps\n• close: simpler, reactive\n• hl2: midpoint of range")
+volCapInput       = input.bool(true, "Cap Volume Spikes", group = GRP_MAIN, tooltip = "Limit extreme volume bars to 3× average.\nPrevents single bars from hijacking VWAP.\nUseful on crypto and small-caps.")
+smoothAnchorInput = input.bool(true, "Smooth Re-Anchor", group = GRP_MAIN, tooltip = "Gradually ramp EWMA alpha after pivot reset.\nReduces initial jitter on new segments.")
+onlyLLHHInput     = input.bool(false, "Only LL / HH Anchors", group = GRP_MAIN, tooltip = "When enabled, VWAP line restarts only on\nLower-Low (LL) and Higher-High (HH) swings.\nHL, LH, EL, EH pivots get labels but\ndon't reset the VWAP segment.")
+
+showBandsInput    = input.bool(true, "Show Bands", group = GRP_BANDS, tooltip = "Display upper and lower deviation bands\naround the VWAP line, filled with trend color.")
+bandMultInput     = input.float(0.618, "Band Multiplier", minval = 0.1, step = 0.1, group = GRP_BANDS, tooltip = "ATR multiplier for band distance.\n• 0.618: Fibonacci golden ratio (default)\n• 1.0: full ATR width\n• 1.618: extended Fibonacci\n• 2.0: wide bands")
+bandTranspInput   = input.int(90, "Band Fill Transparency", minval = 50, maxval = 95, step = 5, group = GRP_BANDS, tooltip = "Transparency of the filled area between bands.\n• 85: subtle (default)\n• 50: more visible")
+
+showPivotsInput    = input.bool(true, "Show Swing Labels", group = GRP_VISUAL)
+showBgInput        = input.bool(false, "Show Trend Background", group = GRP_VISUAL)
+showWatermarkInput = input.bool(true, "Show Watermark", group = GRP_VISUAL, tooltip = "Display 'WillyAlgoTrader - by Willy' watermark on chart")
+themeInput         = input.string("Auto", "Theme", options = ["Auto", "Dark", "Light"], group = GRP_VISUAL, tooltip = "Chart color theme.\n• Auto: detects from chart background\n• Dark / Light: manual override")
+
+showDashInput = input.bool(true, "Show Dashboard", group = GRP_DASH)
+dashPosStr    = input.string("Top Right", "Position", options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right"], group = GRP_DASH)
+
+highSInput    = input.color(color.lime, "Swing Low Labels", inline = "sw", group = GRP_COLORS)
+lowSInput     = input.color(color.red, "Swing High Labels", inline = "sw", group = GRP_COLORS)
+bullVwapInput = input.color(color.lime, "Bullish VWAP", inline = "vw", group = GRP_COLORS)
+bearVwapInput = input.color(color.red, "Bearish VWAP", inline = "vw", group = GRP_COLORS)
+lwInput       = input.int(2, "Line Width", minval = 1, maxval = 5, inline = "vw", group = GRP_COLORS)
+
+enableAlertsInput = input.bool(true, "Enable Alerts", group = GRP_ALERT)
+webhookInput      = input.bool(false, "Webhook JSON Format", group = GRP_ALERT, tooltip = "Send alerts in JSON format for webhook integrations.")
+
+// ══════════════════════════════════════
+// THEME
+// ══════════════════════════════════════
+isDark = switch themeInput
+    "Dark"  => true
+    "Light" => false
+    =>         color.r(chart.bg_color) < 128
+
+TEXT_COLOR     = isDark ? #E0E0E0 : #1A1A1A
+TEXT_MUTED     = isDark ? color.new(#9E9E9E, 0) : color.new(#757575, 0)
+TABLE_BG       = isDark ? color.new(#131722, 5) : color.new(#FFFFFF, 5)
+TABLE_BORDER   = isDark ? color.new(#2A2E39, 0) : color.new(#D0D0D0, 0)
+TABLE_ROW_ALT  = isDark ? color.new(#1C2030, 0) : color.new(#F0F4F8, 0)
+HEADER_BG      = color.new(#2962FF, 0)
+WM_COLOR       = isDark ? color.new(#FFFFFF, 80) : color.new(#000000, 80)
+BULL_BG        = color.new(bullVwapInput, 90)
+BEAR_BG        = color.new(bearVwapInput, 90)
+
+// ══════════════════════════════════════
+// DASHBOARD POSITION
+// ══════════════════════════════════════
+dashPos = switch dashPosStr
+    "Top Left"     => position.top_left
+    "Top Right"    => position.top_right
+    "Bottom Left"  => position.bottom_left
+    "Bottom Right" => position.bottom_right
+    => position.top_right
+
+// ══════════════════════════════════════
+// CORE LOGIC
+// ══════════════════════════════════════
+
+b = bar_index
+
+// ── VOLUME PROCESSING ──
+float volMedian = nz(ta.median(volume, 50), 1.0)
+float volSma20  = nz(ta.sma(volume, 20), 1.0)
+float volCap    = math.max(volSma20 * 3.0, 1.0)
+
+getVol(int offset) =>
+    float rawVol   = nz(volume[offset], 0.0)
+    float floorVol = rawVol > 0 ? rawVol : volMedian
+    float capped   = volCapInput ? math.min(floorVol, volCap) : floorVol
+    math.max(capped, 1.0)
+
+// ── PIVOTS ──
+var ph   = float(na)
+var pl   = float(na)
+var phL  = b
+var plL  = b
+var prev = float(na)
+
+int hbars = ta.highestbars(high, prdInput)
+int lbars = ta.lowestbars(low,  prdInput)
+
+bool isSwingHigh = hbars == 0
+bool isSwingLow  = lbars == 0
+
+ph  := isSwingHigh ? high : ph
+pl  := isSwingLow  ? low  : pl
+phL := isSwingHigh ? b    : phL
+plL := isSwingLow  ? b    : plL
+
+dir = phL > plL ? 1 : -1
+
+// ── ADAPTATION ──
+atrLen = 50
+atr    = nz(ta.atr(atrLen), 0.0)
+atrAvg = nz(ta.rma(atr, atrLen), atr)
+ratio  = atrAvg > 0 ? atr / atrAvg : 1.0
+
+aptRaw     = useAdaptInput ? baseAptInput / math.pow(ratio, volBiasInput) : baseAptInput
+aptClamped = math.max(5.0, math.min(300.0, aptRaw))
+aptSeries  = math.round(aptClamped)
+
+// EWMA alpha from half-life
+alphaFromAPT(float apt) =>
+    1.0 - math.exp(-math.log(2.0) / math.max(1.0, apt))
+
+// ── EWMA VWAP STATE ──
+var float p   = srcInput * getVol(0)
+var float vol = getVol(0)
+
+// ── EWMA ATR STATE (for bands — only updated when bands are on) ──
+var float ewmaAtr = atr
+
+type dataPoints
+    array<chart.point> points
+    polyline poly = na
+
+var vwap = dataPoints.new(array.new<chart.point>())
+
+// ── BAND STATE ──
+// upperPts/lowerPts store points separately during segment build.
+// On redraw, they are merged into a closed contour polygon:
+//   upper[0..n] → lower[n..0] → closed = filled area
+var bandContour = dataPoints.new(array.new<chart.point>())
+var upperPts    = array.new<chart.point>()
+var lowerPts    = array.new<chart.point>()
+
+// ── TRACKING STATE ──
+var string lastSwingStr = "—"
+var int    anchoredDir  = 1
+
+// ── HELPERS ──
+segColor(int d) =>
+    d > 0 ? bullVwapInput : bearVwapInput
+
+bandFillColor(int d) =>
+    color.new(d > 0 ? bullVwapInput : bearVwapInput, bandTranspInput)
+
+bandLineColor(int d) =>
+    color.new(d > 0 ? bullVwapInput : bearVwapInput, math.max(bandTranspInput - 20, 0))
+
+// ── BAND: rebuild closed contour polyline ──
+rebuildBandContour(int d) =>
+    if showBandsInput and upperPts.size() > 1
+        bandContour.poly.delete()
+        bandContour.points.clear()
+        for i = 0 to upperPts.size() - 1
+            bandContour.points.push(upperPts.get(i))
+        for i = lowerPts.size() - 1 to 0
+            bandContour.points.push(lowerPts.get(i))
+        bandContour.poly := polyline.new(
+             bandContour.points, true, false,
+             line_color = bandLineColor(d),
+             fill_color = bandFillColor(d),
+             line_width = 1)
+
+// ── BAND: finalize old segment contour (freeze on chart) ──
+finalizeBandContour(int d) =>
+    if showBandsInput and upperPts.size() > 1
+        // Reuse bandContour.points for the final frozen polyline
+        bandContour.poly.delete()
+        bandContour.points.clear()
+        for i = 0 to upperPts.size() - 1
+            bandContour.points.push(upperPts.get(i))
+        for i = lowerPts.size() - 1 to 0
+            bandContour.points.push(lowerPts.get(i))
+        polyline.new(bandContour.points, true, false,
+             line_color = bandLineColor(d),
+             fill_color = bandFillColor(d),
+             line_width = 1)
+        bandContour.points.clear()
+        upperPts.clear()
+        lowerPts.clear()
+
+// ── BAND: push upper/lower point pair ──
+pushBandPts(int idx, float vwapVal, float atrVal) =>
+    if showBandsInput and not na(vwapVal)
+        float dev = atrVal * bandMultInput
+        upperPts.push(chart.point.from_index(idx, vwapVal + dev))
+        lowerPts.push(chart.point.from_index(idx, vwapVal - dev))
+
+// ── BAND: cap arrays for very long segments ──
+capBandPts() =>
+    if showBandsInput and upperPts.size() > 2000
+        upperPts.shift()
+        lowerPts.shift()
+
+// ══════════════════════════════════════
+// MAIN LOGIC
+// ══════════════════════════════════════
+if dir != dir[1]
+    int   x   = dir > 0 ? plL : phL
+    float y   = dir > 0 ? pl  : ph
+    color col = dir > 0 ? highSInput : lowSInput
+
+    // ── Structure label ──
+    string txt = ""
+    if na(prev)
+        txt := dir > 0 ? "IL" : "IH"
+    else if dir > 0
+        txt := pl < prev ? "LL" : (pl > prev ? "HL" : "EL")
+    else
+        txt := ph > prev ? "HH" : (ph < prev ? "LH" : "EH")
+
+    if showPivotsInput
+        label.new(x, y, text = txt,
+             style = dir > 0 ? label.style_label_up : label.style_label_down,
+             color = color.new(col, 20), textcolor = color.white, size = size.small)
+
+    lastSwingStr := txt
+    prev := dir > 0 ? ph[1] : pl[1]
+
+    // ── LL/HH filter ──
+    bool isFirstSwing = (txt == "IL" or txt == "IH")
+    bool isLLHH       = (txt == "LL" or txt == "HH")
+    bool doAnchor     = isFirstSwing or (onlyLLHHInput ? isLLHH : true)
+
+    if doAnchor
+        color oldSegColor = segColor(anchoredDir)
+        int oldDir = anchoredDir
+        anchoredDir := dir
+
+        int barsback = b - x
+        int safeBack = math.min(math.max(barsback, 0), 4999)
+
+        // Seed VWAP
+        float seedPrice = srcInput[safeBack]
+        float seedVol   = getVol(safeBack)
+        p   := seedPrice * seedVol
+        vol := seedVol
+
+        // Seed ATR (only if bands enabled)
+        if showBandsInput
+            ewmaAtr := nz(atr[safeBack], atr)
+
+        // Finalize old segments
+        vwap.poly.delete()
+        polyline.new(vwap.points, false, false, line_color = oldSegColor, line_width = lwInput)
+        vwap.points.clear()
+        finalizeBandContour(oldDir)
+
+        // Seed point
+        float seedVwap = vol > 0 ? p / vol : seedPrice
+        vwap.points.push(chart.point.from_index(b - safeBack, seedVwap))
+        pushBandPts(b - safeBack, seedVwap, ewmaAtr)
+
+        color newSegColor = segColor(anchoredDir)
+
+        // Backfill
+        if safeBack > 1
+            int rampBars = smoothAnchorInput ? 5 : 0
+            for i = (safeBack - 1) to 0 by 1
+                int barsFromSeed   = safeBack - i
+                float apt_i        = aptSeries[i]
+                float baseAlpha    = alphaFromAPT(apt_i)
+                float rampFactor   = (rampBars > 0 and barsFromSeed <= rampBars) ? 0.5 + 0.5 * barsFromSeed / rampBars : 1.0
+                float alpha        = baseAlpha * rampFactor
+                float vi           = getVol(i)
+                float pxv          = srcInput[i] * vi
+                p   := (1.0 - alpha) * p + alpha * pxv
+                vol := (1.0 - alpha) * vol + alpha * vi
+                if showBandsInput
+                    ewmaAtr := (1.0 - alpha) * ewmaAtr + alpha * nz(atr[i], atr)
+                float vappe = vol > 0 ? p / vol : na
+                vwap.points.push(chart.point.from_index(b - i, vappe))
+                pushBandPts(b - i, vappe, ewmaAtr)
+        else if safeBack == 1
+            float apt_i = aptSeries[0]
+            float alpha = alphaFromAPT(apt_i)
+            if smoothAnchorInput
+                alpha := alpha * 0.75
+            float v_cur = getVol(0)
+            float pxv   = srcInput * v_cur
+            p   := (1.0 - alpha) * p + alpha * pxv
+            vol := (1.0 - alpha) * vol + alpha * v_cur
+            if showBandsInput
+                ewmaAtr := (1.0 - alpha) * ewmaAtr + alpha * atr
+            float vappe = vol > 0 ? p / vol : na
+            vwap.points.push(chart.point.from_index(b, vappe))
+            pushBandPts(b, vappe, ewmaAtr)
+        // safeBack == 0: pivot on current bar, only seed point
+
+        vwap.poly := polyline.new(vwap.points, false, false, line_color = newSegColor, line_width = lwInput)
+        rebuildBandContour(anchoredDir)
+
+    else
+        // Filtered swing — continue current segment
+        float a_f   = alphaFromAPT(aptSeries)
+        float v0_f  = getVol(0)
+        float pxv_f = srcInput * v0_f
+        p   := (1.0 - a_f) * p + a_f * pxv_f
+        vol := (1.0 - a_f) * vol + a_f * v0_f
+        if showBandsInput
+            ewmaAtr := (1.0 - a_f) * ewmaAtr + a_f * atr
+        float vap_f = vol > 0 ? p / vol : na
+        color keepColor = segColor(anchoredDir)
+        vwap.poly.delete()
+        if vwap.points.size() > 4900
+            vwap.points.shift()
+        capBandPts()
+        vwap.points.push(chart.point.from_index(b, vap_f))
+        pushBandPts(b, vap_f, ewmaAtr)
+        vwap.poly := polyline.new(vwap.points, false, false, line_color = keepColor, line_width = lwInput)
+        rebuildBandContour(anchoredDir)
+
+else
+    // Normal bar
+    if not onlyLLHHInput
+        anchoredDir := dir
+    float a_n   = alphaFromAPT(aptSeries)
+    float v0_n  = getVol(0)
+    float pxv_n = srcInput * v0_n
+    p   := (1.0 - a_n) * p + a_n * pxv_n
+    vol := (1.0 - a_n) * vol + a_n * v0_n
+    if showBandsInput
+        ewmaAtr := (1.0 - a_n) * ewmaAtr + a_n * atr
+    float vap_n = vol > 0 ? p / vol : na
+    color curColor = segColor(anchoredDir)
+    vwap.poly.delete()
+    if vwap.points.size() > 4900
+        vwap.points.shift()
+    capBandPts()
+    vwap.points.push(chart.point.from_index(b, vap_n))
+    pushBandPts(b, vap_n, ewmaAtr)
+    vwap.poly := polyline.new(vwap.points, false, false, line_color = curColor, line_width = lwInput)
+    rebuildBandContour(anchoredDir)
+
+// Current VWAP for dashboard
+float currentVwap = vol > 0 ? p / vol : close
+
+// Trend background
+bgcolor(showBgInput ? (dir > 0 ? BULL_BG : BEAR_BG) : na, title = "Trend BG")
+
+// Label cleanup
+if array.size(label.all) > 450
+    label.delete(array.shift(label.all))
+
+// ══════════════════════════════════════
+// DASHBOARD
+// ══════════════════════════════════════
+if showDashInput and barstate.islast
+    var dashTable = table.new(dashPos, 2, 5, TABLE_BG, TABLE_BORDER, 1, TABLE_BORDER, 1)
+
+    table.cell(dashTable, 0, 0, "WillyAlgoTrader", text_color = color.white, bgcolor = HEADER_BG, text_size = size.small, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, 0, 1, 0)
+
+    string trendStr = anchoredDir > 0 ? "Bullish" : "Bearish"
+    color  trendClr = segColor(anchoredDir)
+    table.cell(dashTable, 0, 1, "Trend", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 1, trendStr, text_color = trendClr, text_size = size.small, bgcolor = TABLE_BG)
+
+    string vStr = na(currentVwap) ? "—" : str.tostring(currentVwap, format.mintick)
+    table.cell(dashTable, 0, 2, "VWAP", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 2, vStr, text_color = TEXT_COLOR, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+
+    table.cell(dashTable, 0, 3, "Last Swing", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 3, lastSwingStr, text_color = TEXT_COLOR, text_size = size.small, bgcolor = TABLE_BG)
+
+    table.cell(dashTable, 0, 4, timeframe.period, text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 4, INDICATOR_VERSION, text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+
+// ══════════════════════════════════════
+// WATERMARK
+// ══════════════════════════════════════
+if barstate.islast and showWatermarkInput
+    var wmTable = table.new(position = position.bottom_center, columns = 1, rows = 1,
+         bgcolor = color.new(color.black, 100), border_color = color.new(color.black, 100),
+         border_width = 0, frame_color = color.new(color.black, 100), frame_width = 0)
+    table.cell(wmTable, 0, 0, "WillyAlgoTrader", text_color = WM_COLOR,
+         text_size = size.normal, text_halign = text.align_center, bgcolor = color.new(color.black, 100))
+
+// ══════════════════════════════════════
+// ALERTS
+// ══════════════════════════════════════
+bool dirFlipped  = dir != dir[1] and barstate.isconfirmed
+bool wasAnchor   = dirFlipped and (not onlyLLHHInput or lastSwingStr == "LL" or lastSwingStr == "HH" or lastSwingStr == "IL" or lastSwingStr == "IH")
+bool alertBull   = wasAnchor and dir == 1
+bool alertBear   = wasAnchor and dir == -1
+
+string tickerStr = syminfo.tickerid
+string priceStr  = str.tostring(close, format.mintick)
+string tfStr     = timeframe.period
+
+if enableAlertsInput and alertBull
+    string msg = webhookInput
+         ? '{"action":"trend_bull","ticker":"' + tickerStr + '","price":' + str.tostring(close) + ',"tf":"' + tfStr + '","swing":"' + lastSwingStr + '"}'
+         : "🟢 BULLISH | " + tickerStr + " | TF: " + tfStr + " | Price: " + priceStr + " | Swing: " + lastSwingStr
+    alert(msg, alert.freq_once_per_bar_close)
+
+if enableAlertsInput and alertBear
+    string msg = webhookInput
+         ? '{"action":"trend_bear","ticker":"' + tickerStr + '","price":' + str.tostring(close) + ',"tf":"' + tfStr + '","swing":"' + lastSwingStr + '"}'
+         : "🔴 BEARISH | " + tickerStr + " | TF: " + tfStr + " | Price: " + priceStr + " | Swing: " + lastSwingStr
+    alert(msg, alert.freq_once_per_bar_close)
