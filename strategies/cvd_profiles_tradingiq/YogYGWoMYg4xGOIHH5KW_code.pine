@@ -1,0 +1,646 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © TradingIQ
+
+//@version=6
+indicator("CVD Profiles [TradingIQ]", calc_bars_count = 10000, overlay = false, max_lines_count = 500, max_boxes_count = 500, max_labels_count = 500, max_bars_back = 1500)
+
+
+enum calcType 
+
+    REG = "Regular"
+    FS  = "Fixed Start"
+
+model                                  = input.string(defval = "CVD", title = "Model", options = ["CVD", "Imbalance Ratio", "Activity", "USD Volume"])
+timeframe                              = input.timeframe(defval = "", title = "Timeframe To Calculate New Blocks On")
+TF                                     = input.timeframe(defval = "1", title = "Lower Timeframe Volume")
+offChart                               = input.string(defval = "CVD Delta", title = "CVD Offchart Data", options = ["CVD Delta", "CVD Acceleration"])
+
+calcTypeInput                          = input.enum(defval = calcType.REG, title = "Calculation Type", options = [calcType.REG, calcType.FS], group = "Calculation Type")
+fixedStartTime                         = input.time(timestamp("01 Apr 2026 00:00"), title = "Fixed Start Time", active = calcTypeInput == calcType.FS)
+ticks                                  = input.float(defval = 0 ,title = "Ticks Per Row (0 == Auto)", group = "Calculation Type")
+textSize                               = input.string(title = "Text Size", defval = "Small", options = ["Auto","Tiny", "Small", "Normal", "Large", "Huge"], group = "Current Session Configurations")
+showVA                                 = input.bool(defval = true, title = "Show Single VA Lines", group = "Current Session Configurations")
+
+vaCumu                                 = input.float(defval = 70, title = "Value Area %", minval = 0, maxval = 100) / 100
+upCol                                  = input.color(defval = #55ffda, title = "Up Color", group = "Colors")
+dnCol                                  = input.color(defval = color.rgb(255, 116, 116), title = "Down Color", group = "Colors")
+actCol                                 = input.color(defval = #ff65fb, title = "Activity Color", group = "Colors")
+usdCol                                  = input.color(defval = #5855ff, title = "USD Volume", group = "Colors")
+IBcol                                  = input.color(defval = #ff65fb, title = "IB Character Color", group = "Colors")
+vaCol                                  = input.color(defval = #74ffbc, title = "Value Area Color", group = "Colors")
+POCcol                                 = input.color(defval = #c7ff74, title = "POC Character Color", group = "Colors")
+
+
+
+type cvdData
+
+    array<float>  tickLevels 
+    array<float>  cvd
+    array<float>  buyVol 
+    array<float>  sellVol 
+    array<float>  totalVol 
+    array<float>  deltaVol
+    array<float>  activity
+
+type singleProfileUDT
+
+    array<box>   singleProfiledraw
+    array<color> proColor
+    int right = bar_index
+    array<float> usdVol
+    int         timeBlock
+
+
+
+
+finTim = switch calcTypeInput
+    
+    calcType.REG => timeframe.change("1D")
+    calcType.FS  => time[1] < fixedStartTime and time >= fixedStartTime
+
+
+sz = switch textSize
+    
+    "Auto"             => size.auto
+    "Tiny"             => size.tiny
+    "Small"            => size.small
+    "Normal"           => size.normal
+    "Large"            => size.large
+    "Huge"             => size.huge
+
+
+method shifprofilespAll(array<float> tickLevels, array<float> cvd, array<float> buyVol, array<float> sellVol, array<float> totalVol, array<float> deltaVol, array<float> activity, pop = false) =>
+
+    if tickLevels.size() > 90000
+
+        switch pop 
+
+            false => 
+
+                     tickLevels.shift(), cvd.shift(), buyVol.shift(), sellVol.shift(), totalVol.shift(), deltaVol.shift(), activity.shift()
+
+            =>    
+                     tickLevels.pop() , cvd.shift(), buyVol.pop(), sellVol.pop(), totalVol.pop(), deltaVol.pop(), activity.pop()
+
+
+method extendLines(array<line> id, sizeCount, startIndex) => 
+
+    if id.size() > sizeCount 
+
+        for i = id.size() - startIndex to 0 
+
+            getValue = id.get(i).get_y1()
+
+            if high >= getValue and low <= getValue 
+
+                id.remove(i)
+                continue 
+
+            id.get(i).set_x2(time)
+
+
+direction() => 
+    if TF == "1T" 
+        switch 
+            close == bid => -1 
+            close == ask =>  1
+            =>               math.sign(close - close[1]) 
+    else 
+        math.sign(close - close[1])
+
+
+
+profiles() => 
+
+    var valueAreas          = array.new<float>()
+    var valueAreaDrawings   = array.new<line> ()
+    var pocDrawings         = array.new<line>()
+
+    atr = ta.atr(14)
+
+    [dayStart, dayEnd]             = request.security(syminfo.tickerid, "1D", [last_bar_time, time_close], lookahead = barmerge.lookahead_on)
+    [ltfV, ltfD, ltfC, ltfH, ltfL] = request.security_lower_tf(syminfo.tickerid, TF, [volume * direction(), math.sign(close - close[1]), close, high, low])
+
+    var cvd = 0. 
+
+    cvd += nz(ltfV.sum())
+
+    cvdDelta = nz(cvd - cvd[1]) 
+
+    cvdAccel = nz(cvdDelta - (cvd[1] - cvd[2]))
+
+
+
+    var lowOfMain = float(na), var highOfMain = float(na)
+
+    desiredTF = timeframe.in_seconds(timeframe)
+
+    var finalTF = switch 
+
+        desiredTF < timeframe.in_seconds("") => timeframe.in_seconds("")
+        =>          desiredTF
+
+    lastDay = time >= dayStart and calcTypeInput == calcType.REG or time >= fixedStartTime and calcTypeInput == calcType.FS
+
+    var tickAmount = 0.
+
+    var TP = cvdData.new(array.new<float>(), array.new<float>(), array.new<float>(), array.new<float>(), array.new<float>(), array.new<float>(), array.new<float>())
+
+    var indexGet = 0 , var numberAdd  = 0, var startTime  = 0, 
+    var max      = 0., var min = 20e20   , var IBend      = 0, 
+    var indexIBS = 0., var indexIBE  = 0., var startTick  = 0.
+    var maxIndex = 0 , var indexMax  = 0 , var startBar   = 0
+
+    var profilesdraw       = array.new<label>(), var letterCount = array.new<int>(), 
+    var singleProData = array.new<singleProfileUDT>(), isNew = false       
+
+    if barstate.isfirst
+
+        for i = 0 to 2
+            singleProData.push(singleProfileUDT.new(array.new<box>(), array.new<color>(), bar_index, array.new<float>()))
+
+
+    if profilesdraw.size() > 0 
+
+        for i = 0 to profilesdraw.size() - 1
+
+            profilesdraw.shift().delete()
+
+    valueAreaDrawings.extendLines(2, 3)
+    pocDrawings      .extendLines(1, 2)
+
+
+    if finTim
+
+        tickAmount := switch ticks == 0 
+
+            true => atr   * syminfo.mintick
+            =>      ticks * syminfo.mintick
+
+        startTick     := math.floor(open / tickAmount) * tickAmount
+        TP.tickLevels := array.from(startTick - tickAmount, startTick, startTick + tickAmount)
+        TP.cvd        := array.from(0, 0, 0)
+        TP.buyVol     := array.from(0, 0, 0)
+        TP.sellVol    := array.from(0, 0, 0)
+        TP.totalVol   := array.from(0, 0, 0)
+        TP.deltaVol   := array.from(0, 0, 0)
+        TP.activity   := array.from(0, 0, 0)
+
+        isNew         := true 
+
+        singleProData := array.new<singleProfileUDT>()
+
+        
+        if lastDay
+                
+            for i = 0 to 2
+                singleProData.push(singleProfileUDT.new(array.new<box>(), array.new<color>(), bar_index, array.new<float>()))
+
+                if i < 2 and showVA
+
+                    valueAreaDrawings.push(line.new(time, close, time, close, xloc = xloc.bar_time, color = vaCol, style = line.style_dotted, force_overlay = true))
+
+            pocDrawings.push(line.new(time, close, time, close, xloc = xloc.bar_time, color = POCcol, style = line.style_dotted, force_overlay = true))
+
+        label.new(bar_index + 1, open, color = IBcol, style = label.style_circle, size = 2, force_overlay = true)
+        label.new(bar_index + 1, open, color = color.new(IBcol, 80), style = label.style_circle, size = 3, force_overlay = true)
+
+        IBend := timestamp(year, month, dayofmonth, hour + 1, 00, 00)
+
+        indexGet := -1, numberAdd := 0,     startTime := time, startBar := bar_index
+        max      := 0, min       := 20e20, indexIBS  := startTick, 
+                             indexIBE := startTick
+    var minUSDvol = float(na), var maxUSDvol = 0.
+                
+
+
+    if TP.tickLevels.size() > 0 and lastDay
+
+        last  = TP.tickLevels.last () 
+        first = TP.tickLevels.first()
+        if TP.activity.size() > 0
+            TP.activity.fill(0)
+
+        max := math.max(max, high), min := math.min(min, low), 
+
+        while high >= last
+
+            last += tickAmount
+
+            TP.tickLevels.push(last)
+            TP.cvd       .push(0)
+            TP.buyVol    .push(0)
+            TP.sellVol   .push(0)
+            TP.totalVol  .push(0)
+            TP.deltaVol  .push(0)
+            TP.activity  .push(0)
+
+            TP.tickLevels.shifprofilespAll(TP.cvd, TP.buyVol, TP.sellVol, TP.totalVol, TP.deltaVol, TP.activity)
+
+            if lastDay 
+
+                singleProData.push(singleProfileUDT.new(array.new<box>(), array.new<color>(), bar_index, array.new<float>()))
+
+        if time_close <= IBend
+
+            indexIBE := math.max(high, indexIBE)
+
+        while low <= first
+
+            first -= tickAmount
+
+            TP.tickLevels.unshift(first)
+            TP.cvd       .unshift(0)
+            TP.buyVol    .unshift(0)
+            TP.sellVol   .unshift(0)
+            TP.totalVol  .unshift(0)
+            TP.deltaVol  .unshift(0)
+            TP.activity  .unshift(0)
+
+            TP.tickLevels.shifprofilespAll(TP.cvd, TP.buyVol, TP.sellVol, TP.totalVol, TP.deltaVol, TP.activity, true)
+                
+            if lastDay 
+
+                singleProData.unshift(singleProfileUDT.new(array.new<box>(), array.new<color>(), bar_index, array.new<float>()))
+
+        if time_close <= IBend 
+
+            indexIBS := math.min(indexIBS, low)
+
+        if ltfV.size() > 0 
+            for [i, data] in ltfV
+
+                start = TP.tickLevels.binary_search_leftmost(ltfL.get(i))
+                end   = TP.tickLevels.binary_search_leftmost(ltfH.get(i))
+
+                div   = data / (math.abs(end - start) + 1)
+
+                for x = start to end 
+
+                    add = TP.cvd.get(x) + nz(div)
+
+                    TP.cvd.set(x, add)
+
+                    absAmount = math.abs(nz(div))
+
+                    switch math.sign(div)
+
+                        1  => TP.buyVol .set(x, absAmount)
+                        -1 => TP.sellVol.set(x, absAmount)
+
+                    TP.totalVol.set(x, TP.totalVol.get(x) + absAmount)
+                    TP.deltaVol.set(x, (nz(TP.buyVol.get(x) / TP.sellVol.get(x))))
+
+                    mult = switch syminfo.volumetype != "quote"
+
+                        false => 1
+                        =>       ltfC.get(i)
+
+                    switch model 
+
+                        "USD Volume" => TP.activity.set(x, TP.activity.get(x) + (absAmount * mult))
+                        =>              TP.activity.set(x, TP.activity.get(x) + absAmount)
+                            
+        timeN1 = startTime + timeframe.in_seconds("") * 1000, getTF = timeframe.from_seconds(desiredTF)
+
+        getMax = TP.totalVol.max()
+
+        valueIndexStart = 0, valueIndexEnd = 0, pocStart = TP.totalVol.indexof(getMax)
+
+        bottom = 0, top = 0
+
+        sumCount = TP.totalVol.sum(), arrSize = TP.totalVol.size()
+        
+        if na(lowOfMain)
+            lowOfMain := low 
+            highOfMain := high 
+
+        lowOfMain  := math.min(low, lowOfMain)
+        highOfMain := math.max(high, highOfMain)
+
+        startIndex = TP.tickLevels.binary_search_leftmost(lowOfMain)
+        endIndex   = TP.tickLevels.binary_search_leftmost(highOfMain)
+
+        geprofilesCprice = switch 
+            
+            not na(pocStart) => TP.tickLevels.get(pocStart)
+            =>                  float(na)
+
+        if lastDay 
+
+            pocDrawings.last().set_xy2(time, geprofilesCprice)
+            pocDrawings.last().set_y1 (geprofilesCprice)
+
+            for x = 0 to arrSize - 1
+
+                slice = TP.totalVol.slice(math.max(pocStart - x, 0), math.min(pocStart + x + 1, arrSize))
+
+                if slice.sum() / sumCount >= vaCumu
+
+                    bottom := math.max(pocStart - x, 0)
+                    top    := math.min(pocStart + x + 1, arrSize - 1)
+
+                    getTop      = TP.tickLevels.get(top), getBot = TP.tickLevels.get(bottom)
+
+                    if valueAreaDrawings.size() > 0
+
+                        getDrawings = valueAreaDrawings.last()
+
+                        getDrawings.set_y1(getTop), getDrawings.set_xy2(time, getTop)
+
+                        getDrawings := valueAreaDrawings.get(-2)
+
+                        getDrawings.set_y1(getBot), getDrawings.set_xy2(time, getBot)
+
+                    break 
+
+            midDay = math.avg(dayStart, dayEnd)
+
+
+            lowOfMain := float(na)
+            highOfMain := float(na)
+
+            var timeBlock = time
+
+            if timeframe.change(timeframe)
+
+                timeBlock := time 
+
+                if model == "Activity" or model == "USD Volume"
+
+                    if singleProData.size() > 0 
+
+                        for data in singleProData 
+                            for boxes in data.singleProfiledraw
+
+                                boxes.set_border_color(#000000)
+
+            for i = startIndex to endIndex 
+
+                getLevel = singleProData.get(i), 
+                getPrice = TP.tickLevels.get(i), 
+                getSize = getLevel.singleProfiledraw.size()
+                getCVD   = TP.cvd.get(i), 
+                deltaRatio = TP.deltaVol.get(i)
+
+                left = switch getSize
+            
+                    0 => startBar + 2
+                    =>   getLevel.right 
+
+                transp = switch 
+                    
+                    i >= bottom and i <= top => 0
+                    =>                          60
+
+
+                absCVD = TP.cvd.abs(), absDelta = TP.deltaVol.abs()
+                
+                [minSeries, maxSeries, seriesNow] = switch model
+
+                    "Imbalance Ratio" => [absDelta.min(), absDelta.max(), deltaRatio]
+                    =>                   [absCVD.min(), absCVD.max(), getCVD]
+
+
+                colorBox = switch math.sign(seriesNow)
+
+                    1  => color.from_gradient(seriesNow, minSeries, maxSeries, color.new(upCol, 90), upCol)
+                    -1 => color.from_gradient(math.abs(seriesNow), minSeries, maxSeries, color.new(dnCol, 90), dnCol)
+                    =>    color.gray 
+
+                if model == "Imbalance Ratio"
+
+                    colorBox := switch 
+
+                        seriesNow >= 1  => color.from_gradient(seriesNow, 1, absDelta.max(), color.new(upCol, 90), upCol)
+                        seriesNow < 1   => color.from_gradient(math.abs(seriesNow), absDelta.min(), 1, dnCol, color.new(dnCol, 90))
+                        =>    color.gray 
+
+                    seriesNow *= 100 
+
+                if model == "Activity"
+
+                    seriesNow := TP.activity.get(i) / volume * 100
+
+                    colorBox := color.from_gradient(seriesNow, 0, 75, color.new(actCol, 90), actCol)
+
+                if model == "USD Volume"
+
+                    seriesNow := TP.activity.get(i)
+
+                    colorBox := color.from_gradient(seriesNow, 0, 75, color.new(actCol, 90), actCol)
+
+                if na(minUSDvol)
+
+                    minUSDvol := seriesNow 
+
+                minUSDvol := math.min(seriesNow, minUSDvol)
+                maxUSDvol := math.max(seriesNow, maxUSDvol)
+
+                if na(getLevel.timeBlock) or timeBlock > getLevel.timeBlock
+
+                    getLevel.usdVol.push(seriesNow)
+
+                    getLevel.singleProfiledraw.push(
+                            box.new(
+                                    left, getPrice , left + 1, getPrice + tickAmount,
+                                            border_color = model == "Activity" or model == "USD Volume" ? #fff455: #000000,
+                                            bgcolor      = colorBox, 
+                                            text         = str.tostring(seriesNow, model != "CVD" and model != "USD Volume" ? format.percent : format.volume), 
+                                            text_color   = color.white, force_overlay = true
+                                            )) 
+
+                    getLevel.right := left + 1
+                    getLevel.timeBlock := timeBlock
+
+                else 
+
+                    getLevel.usdVol.set(getLevel.usdVol.size() - 1, seriesNow)
+
+                    getBox = getLevel.singleProfiledraw.last()
+
+                    getBox.set_border_color(model == "Activity" or model == "USD Volume" ? #fff455: #000000)
+
+                    getBox.set_bgcolor(colorBox)
+                    getBox.set_text(str.tostring(seriesNow, model != "CVD" and model != "USD Volume" ? format.percent : format.volume))
+
+    
+        if lastDay 
+                
+            var box       VAbox                 = box  (na)
+            var line      sessionLineLower      = line (na)
+            var line      sessionOutlineLower   = line (na)
+            var line      sessionLineUpper      = line (na)
+            var line      sessionOutlineUpper   = line (na)
+            var label     profilesLab                = label(na)
+            var line      VAline                = line(na)
+            var line      VAlineOutline         = line(na)
+            var line      IBline                = line(na)
+            var line      IBoutline             = line(na)
+
+            VAbox               .delete(), sessionLineLower    .delete(), sessionOutlineLower .delete()
+            sessionLineUpper    .delete(), sessionOutlineUpper .delete(), profilesLab              .delete()
+            VAline              .delete(), VAlineOutline       .delete(), IBline              .delete(),
+                                                 IBoutline.delete()
+
+            getTop    = TP.tickLevels.get(top), getBot = TP.tickLevels.get(bottom), 
+
+            IBline                := line.new(timeN1, indexIBS, timeN1, indexIBE, 
+                                            xloc  = xloc.bar_time, 
+                                            color = IBcol, force_overlay = true
+                                            )
+                
+            var modelLab = label(na)
+            modelLab.delete()
+
+            if TP.tickLevels.size() > 0
+
+                modelLab := label.new(timeN1 + timeframe.in_seconds("") * 1000 * 2, TP.tickLevels.last(), xloc = xloc.bar_time, text = model, textcolor = chart.fg_color, size = size.normal, color = #00000000, force_overlay = true)
+
+            var ibOutLines = array.new<line>()
+
+            if ibOutLines.size() > 0
+
+                for i = 0 to ibOutLines.size() - 1
+                    ibOutLines.shift().delete()
+
+            transp = array.from(96, 97, 98, 99)
+
+            for i = 0 to 3
+
+                ibOutLines.push(line.new(timeN1, indexIBS, timeN1, indexIBE, xloc = xloc.bar_time, color = color.new(IBcol, transp.get(i)), width = (i + 1) * 4, force_overlay = true))
+
+            var keyLevelsLabels = array.new<label>()
+                
+            size = keyLevelsLabels.size()
+
+            if size > 0 
+                for i = 0 to size - 1
+                    keyLevelsLabels.shift().delete()
+
+            prices = array.from(getBot, getTop, TP.tickLevels.get(math.floor(TP.tickLevels.size() / 2)), startTick, geprofilesCprice)
+            texts  = array.from("VAL", "VAH", "Mid", "IB", "POC")
+            colors = array.from(vaCol, vaCol, color.rgb(255, 116, 116), IBcol, POCcol)
+
+            for [i, data] in prices 
+
+                keyLevelsLabels.push(label.new(startTime, data, xloc = xloc.bar_time, 
+                                            text      = texts.get(i) + " ▸",
+                                            color     = #00000000, 
+                                            textcolor = colors.get(i), 
+                                            size      = size.small, 
+                                            style     = label.style_label_right,
+                                            force_overlay = true
+                                            ))
+
+                keyLevelsLabels.push(label.new(startTime, data, xloc = xloc.bar_time, 
+                                            text      = texts.get(i) + " ▸",
+                                            color     = #00000000, 
+                                            textcolor = colors.get(i), 
+                                            size      = size.small, 
+                                            style     = label.style_label_right,
+                                            force_overlay = true
+                                            ))
+
+
+            if session.islastbar and calcTypeInput == calcType.REG
+
+                sizeLab = keyLevelsLabels.size()
+
+                if sizeLab > 0 
+                    for i = 0 to sizeLab - 1
+                        keyLevelsLabels.shift().delete()
+
+                profilesdraw             .clear(), sessionLineLower    := na
+                sessionOutlineLower := na   , profilesLab              := na
+                sessionLineUpper    := na   , sessionOutlineUpper := na
+                VAbox               := na   , VAline              := na
+                VAlineOutline       := na   , IBline              := na, 
+                IBoutline           := na   , keyLevelsLabels.clear()
+                ibOutLines.clear()
+                singleProData.clear()
+                minUSDvol := float(na)
+                maxUSDvol := 0.
+   
+    if barstate.islast 
+
+        getLabX = label.all.first().get_x()
+            
+        for lines in line.all 
+            if lines.get_x1() < getLabX 
+                lines.delete()
+
+        if model == "USD Volume"
+
+            if singleProData.size() > 0 
+                for data in singleProData
+                    for [x, boxes] in data.singleProfiledraw 
+
+                        getVol   = data.usdVol.get(x)
+
+                        boxes.set_bgcolor(color.from_gradient(getVol, minUSDvol, maxUSDvol, color.new(usdCol, 90), usdCol))
+
+
+
+    [cvdAccel, cvdDelta]
+
+[cvdAccel, cvdDelta] = profiles()
+
+var maxAmt = array.new<float>(0) 
+
+plotSeries = switch offChart == "CVD Delta"
+
+    true => cvdDelta
+    =>      cvdAccel
+
+
+if not na(plotSeries)
+
+    absData = math.abs(plotSeries)
+
+    if maxAmt.size() == 0 
+
+        maxAmt .push(absData)
+
+    else 
+
+        if absData > maxAmt.min()
+
+            search = maxAmt.binary_search_rightmost(absData)
+
+            maxAmt.insert(search, absData)
+
+            if maxAmt.size() > 50
+                maxAmt.shift()
+
+colCols = switch
+
+    plotSeries >= 0 => color.from_gradient(plotSeries, 0, maxAmt.min() , color.new(upCol, 90), upCol)
+    =>                 color.from_gradient(plotSeries, -maxAmt.min() , 0, dnCol, color.new(dnCol, 90))
+
+plot(plotSeries, style = plot.style_columns, color = colCols)
+
+if barstate.islast 
+
+    if calcTypeInput == calcType.FS
+
+        var vline = line(na), var vlab = label(na)
+
+        vline.delete(), vlab.delete()
+
+        vline := line.new (fixedStartTime, 0, fixedStartTime, 0.0001, xloc = xloc.bar_time, extend = extend.both, color = chart.fg_color, width = 2)
+        vlab  := label.new(fixedStartTime, 0, xloc = xloc.bar_time, color = #00000000, textcolor = chart.fg_color, text = "Drag Me")
+
+
+    if box.all.size() >= 495 
+
+        var tab    = table.new(position.top_right, 99, 99, 
+                                        bgcolor       = #20222C, 
+                                        border_color  = #363843, 
+                                        frame_color   = #363843, 
+                                        border_width  = 1, 
+                                        frame_width   = 1, 
+                                        force_overlay = true
+                                        )
+        tab.clear(0, 0, 0, 0)
+        tab.cell(0, 0, text = 'Increase "Tick Size" Or "Timeframe To Calculate On"', text_color = color.white, text_size = size.small)
