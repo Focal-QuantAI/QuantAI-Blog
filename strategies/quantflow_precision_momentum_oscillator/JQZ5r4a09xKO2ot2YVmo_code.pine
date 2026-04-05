@@ -1,0 +1,164 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Anonycryptous
+
+//@version=6
+indicator("QuantFlow: Precision Momentum Oscillator", shorttitle="QuantFlow Osc | Anonycryptous", overlay=false)
+
+// --- Constants ---
+var string GRP_ANCHOR = "Anchor Settings"
+var string GRP_SENSE  = "Momentum Logic"
+var string GRP_STYLE  = "Visual Appearance"
+var string GRP_UI     = "Dashboard & Alerts"
+
+// --- Inputs ---
+anchorMethod = input.string("Auto", "Anchor Method", options=["Auto", "Timeframe", "Date"], group=GRP_ANCHOR)
+anchorTf     = input.timeframe("D", "Manual Timeframe", group=GRP_ANCHOR)
+anchorDate   = input.time(timestamp("2024-01-01 00:00:00"), "Manual Date", group=GRP_ANCHOR)
+
+momLength    = input.int(3, "Momentum Sensitivity", minval=1, group=GRP_SENSE, tooltip="DEMA Zero-Lag Smoothing. 3 is optimized for 15m high-volatility assets like BTC.")
+fibThreshold = input.float(0.618, "Reversal Zone (Fib)", minval=0.1, group=GRP_SENSE)
+
+bullColor    = input.color(#00ffbb, "Bull Color (Fluor)", group=GRP_STYLE)
+bearColor    = input.color(#ff1100, "Bear Color (Fluor)", group=GRP_STYLE)
+rangeColor   = input.color(#787b86, "Range Color (Grey)", group=GRP_STYLE)
+
+showBg       = input.bool(true, "Show Background Trend Zones", group=GRP_STYLE)
+showSparks   = input.bool(true, "Show Predictive Markers", group=GRP_UI)
+showDiv      = input.bool(true, "Show Momentum Divergences", group=GRP_UI)
+showTable    = input.bool(true, "Show Momentum Dashboard", group=GRP_UI)
+tableSize    = input.string("small", "Table Size", options=["tiny", "small", "normal"], group=GRP_UI)
+tablePos     = input.string("Top Right", "Table Position", options=["Top Right", "Bottom Right", "Top Left", "Bottom Left"], group=GRP_UI)
+tableTransp  = input.int(10, "Table Transparency", minval=0, maxval=100, group=GRP_UI)
+
+// --- Logic ---
+// Auto Anchor Logic
+string autoTf = timeframe.isintraday ? (timeframe.multiplier <= 15 ? "D" : "W") : (timeframe.isdaily ? "M" : "12M")
+
+// Detect Reset
+bool isReset = switch anchorMethod
+    "Auto"      => timeframe.change(autoTf)
+    "Timeframe" => timeframe.change(anchorTf)
+    "Date"      => time >= anchorDate and time[1] < anchorDate
+    => false
+
+// Cumulative Variables for MIDAS VWAP
+var float sumVol      = 0.0
+var float sumVolPrice = 0.0
+var float sumVolSq    = 0.0
+
+if isReset
+    sumVol      := volume
+    sumVolPrice := volume * hlc3
+    sumVolSq    := volume * math.pow(hlc3, 2)
+else
+    sumVol      += volume
+    sumVolPrice += volume * hlc3
+    sumVolSq    += volume * math.pow(hlc3, 2)
+
+// Core Calculations
+float midasVwap = sumVolPrice / sumVol
+float variance  = (sumVolSq / sumVol) - math.pow(midasVwap, 2)
+float stdDev    = math.sqrt(math.max(0, variance))
+
+// Z-Score Momentum (Zero-Lag DEMA Smoothing)
+float rawZ   = stdDev != 0 ? (close - midasVwap) / stdDev : 0
+float e1     = ta.ema(rawZ, momLength)
+float e2     = ta.ema(e1, momLength)
+float momOsc = 2 * e1 - e2
+
+// Velocity & Raw Trend Logic (Instant Flip)
+float velocity  = momOsc - momOsc[1]
+bool isBullish  = momOsc > 0
+bool isBearish  = momOsc < 0
+
+// Early Reversal Warning System
+bool bullSpark = ta.crossover(velocity, 0) and momOsc < -0.382
+bool bearSpark = ta.crossunder(velocity, 0) and momOsc > 0.382
+bool zeroCross = ta.cross(momOsc, 0)
+
+// --- Momentum Divergence Logic ---
+float oscPH = ta.pivothigh(momOsc, 4, 2)
+float oscPL = ta.pivotlow(momOsc, 4, 2)
+float pricePH = ta.pivothigh(high, 4, 2)
+float pricePL = ta.pivotlow(low, 4, 2)
+
+float oldOscPH = ta.valuewhen(not na(oscPH), oscPH, 1)
+float oldPricePH = ta.valuewhen(not na(pricePH), pricePH, 1)
+float oldOscPL = ta.valuewhen(not na(oscPL), oscPL, 1)
+float oldPricePL = ta.valuewhen(not na(pricePL), pricePL, 1)
+
+bool isBearDiv = not na(oscPH) and oscPH < oldOscPH and high[2] > oldPricePH
+bool isBullDiv = not na(oscPL) and oscPL > oldOscPL and low[2] < oldPricePL
+
+// --- Volatility Compression Metric ---
+float oscRange = ta.highest(momOsc, 10) - ta.lowest(momOsc, 10)
+float oscAvgRange = ta.sma(ta.highest(momOsc, 10) - ta.lowest(momOsc, 10), 50)
+float compRatio = (oscRange / nz(oscAvgRange, 1))
+string compStatus = compRatio < 0.7 ? "COILING" : compRatio > 1.4 ? "EXPANDING" : "STABLE"
+color compColor = compRatio < 0.7 ? #ffaa00 : compRatio > 1.4 ? bullColor : rangeColor
+
+// --- Visuals ---
+// Background Trend Zones
+bgcolor(showBg ? (isBullish ? color.new(bullColor, 94) : color.new(bearColor, 94)) : na, title="Trend Background")
+
+// Zero Line (The Anchor)
+hline(0, "Midline", color.new(bearColor, 50), hline.style_solid)
+// Overbought/Oversold Fib Levels (High-Visibility Platinum Style)
+hline(fibThreshold, "OB Zone", color.new(chart.fg_color, 35), hline.style_solid)
+hline(-fibThreshold, "OS Zone", color.new(chart.fg_color, 35), hline.style_solid)
+
+// Main Oscillator Wave
+p_osc  = plot(momOsc, "Momentum Wave", isBullish ? bullColor : bearColor, 2)
+p_zero = plot(0, "Zero", display=display.none)
+
+// "Expensive" Gradient Fill
+fill(p_osc, p_zero, momOsc, 0, isBullish ? bullColor : bearColor, color.new(chart.bg_color, 100), title="Momentum Gradient")
+
+// Predictive Marker logic
+plotchar(showSparks and bullSpark ? momOsc : na, "Early Bull Spark", "✦", location.absolute, bullColor, size=size.tiny)
+plotchar(showSparks and bearSpark ? momOsc : na, "Early Bear Shift", "✦", location.absolute, bearColor, size=size.tiny)
+
+// Divergence Markers (Circles on the wave)
+plotshape(showDiv and isBearDiv ? momOsc[2] : na, "Bearish Divergence", shape.circle, location.absolute, bearColor, size=size.tiny, offset=-2)
+plotshape(showDiv and isBullDiv ? momOsc[2] : na, "Bullish Divergence", shape.circle, location.absolute, bullColor, size=size.tiny, offset=-2)
+
+// --- Dashboard ---
+tPos = switch tablePos
+    "Top Right"    => position.top_right
+    "Bottom Right" => position.bottom_right
+    "Top Left"     => position.top_left
+    "Bottom Left"  => position.bottom_left
+    => position.top_right
+
+tSize = switch tableSize
+    "tiny"   => size.tiny
+    "small"  => size.small
+    "normal" => size.normal
+    => size.small
+
+if showTable and barstate.islast
+    var table momTable = table.new(tPos, 2, 5, bgcolor=color.new(chart.bg_color, tableTransp), border_width=1, border_color=rangeColor)
+    string statusText = math.abs(momOsc) > fibThreshold ? "EXTREME" : "STABLE"
+    color statusCol   = math.abs(momOsc) > fibThreshold ? bearColor : bullColor
+    
+    table.cell(momTable, 0, 0, "Momentum", text_color=chart.fg_color, text_halign=text.align_left, text_size=tSize)
+    table.cell(momTable, 1, 0, str.tostring(momOsc, "#.##"), text_color=isBullish ? bullColor : bearColor, text_size=tSize)
+    
+    table.cell(momTable, 0, 1, "Velocity", text_color=chart.fg_color, text_halign=text.align_left, text_size=tSize)
+    table.cell(momTable, 1, 1, velocity > 0 ? "ACCEL" : "DECEL", text_color=velocity > 0 ? bullColor : bearColor, text_size=tSize)
+    
+    table.cell(momTable, 0, 2, "Heat Index", text_color=chart.fg_color, text_halign=text.align_left, text_size=tSize)
+    table.cell(momTable, 1, 2, statusText, text_color=statusCol, text_size=tSize)
+    
+    table.cell(momTable, 0, 3, "Volatility", text_color=chart.fg_color, text_halign=text.align_left, text_size=tSize)
+    table.cell(momTable, 1, 3, compStatus, text_color=compColor, text_size=tSize)
+
+    table.cell(momTable, 0, 4, "Status", text_color=chart.fg_color, text_halign=text.align_left, text_size=tSize)
+    table.cell(momTable, 1, 4, isBullish ? "BULLISH" : isBearish ? "BEARISH" : "STABLE", text_color=isBullish ? bullColor : isBearish ? bearColor : rangeColor, text_size=tSize)
+
+
+// --- Alerts ---
+alertcondition(zeroCross, "Zero Line Cross", "Momentum shifted past the midline (Trend Change)")
+alertcondition(bullSpark or bearSpark, "Early Reversal Spark", "Early momentum shift detected (Predictive Signal)")
+alertcondition(math.abs(momOsc) > fibThreshold, "Momentum Extreme", "Oscillator entered the Fibonacci Reversal Zone")
+alertcondition(isBearDiv or isBullDiv, "Momentum Divergence", "Oscillator and Price are diverging (Trend Exhaustion)")
