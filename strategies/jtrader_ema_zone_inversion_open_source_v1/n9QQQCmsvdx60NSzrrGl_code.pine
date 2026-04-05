@@ -1,0 +1,430 @@
+//@version=5
+// Based on J TRADER EMA INVERSION by @jtrader (https://x.com/jtrader)
+// Original TradingView script: https://www.tradingview.com/script/z1dRh04v-J-TRADER-EMA-INVERSION/
+// Open source rebuild — same concept, independently coded
+indicator("JTrader EMA Zone Inversion - Open Source v1", overlay=true, max_bars_back=500, max_boxes_count=400, max_labels_count=500, max_lines_count=500)
+
+// ─────────────────────────────────────────────
+// INPUTS — EMAs
+// ─────────────────────────────────────────────
+ema1Len     = input.int(33,  "EMA 33",  group="EMAs")
+ema2Len     = input.int(50,  "EMA 50",  group="EMAs")
+ema3Len     = input.int(200, "EMA 200", group="EMAs")
+
+// ─────────────────────────────────────────────
+// INPUTS — Filters
+// ─────────────────────────────────────────────
+fvgLookback = input.int(30,  "FVG max age (bars)", group="Filters")
+pivotFilter = input.string("All", "Pivot Count Filter", options=["All", "Single pivot only", "Multiple pivots only"], group="Filters")
+
+// ─────────────────────────────────────────────
+// INPUTS — Display Long
+// ─────────────────────────────────────────────
+showLong       = input.bool(true,  "Show Long Signals",          group="Display — Long")
+showFVGBoxL    = input.bool(false, "Show Long FVG Box",           group="Display — Long")
+showIFVGBoxL   = input.bool(true,  "Show Long IFVG Box",          group="Display — Long")
+showPivotLowL  = input.bool(false, "Show Long Pivot Low Marker",  group="Display — Long")
+showPivotCntL  = input.bool(false, "Show Long Pivot Count Label", group="Display — Long")
+showLevelsL    = input.bool(false, "Show Long SL / TP Lines",     group="Display — Long")
+extBarsL       = input.int(40,     "Long Line extension (bars)",   group="Display — Long")
+
+// ─────────────────────────────────────────────
+// INPUTS — Display Short
+// ─────────────────────────────────────────────
+showShort      = input.bool(true,  "Show Short Signals",           group="Display — Short")
+showFVGBoxS    = input.bool(false, "Show Short FVG Box",            group="Display — Short")
+showIFVGBoxS   = input.bool(true,  "Show Short IFVG Box",           group="Display — Short")
+showPivotHighS = input.bool(false, "Show Short Pivot High Marker",  group="Display — Short")
+showPivotCntS  = input.bool(false, "Show Short Pivot Count Label",  group="Display — Short")
+showLevelsS    = input.bool(false, "Show Short SL / TP Lines",      group="Display — Short")
+extBarsS       = input.int(40,     "Short Line extension (bars)",    group="Display — Short")
+
+// ─────────────────────────────────────────────
+// INPUTS — Alerts
+// ─────────────────────────────────────────────
+enableAlertsL = input.bool(false, "Enable Long Alerts",  group="Alerts")
+enableAlertsS = input.bool(false, "Enable Short Alerts", group="Alerts")
+
+// ─────────────────────────────────────────────
+// EMAs
+// ─────────────────────────────────────────────
+ema1 = ta.ema(close, ema1Len)
+ema2 = ta.ema(close, ema2Len)
+ema3 = ta.ema(close, ema3Len)
+
+emaHigh = math.max(ema1, math.max(ema2, ema3))
+emaLow  = math.min(ema1, math.min(ema2, ema3))
+
+plot(ema1, "EMA 33",  color=color.new(color.blue,   0), linewidth=1)
+plot(ema2, "EMA 50",  color=color.new(color.orange, 0), linewidth=1)
+plot(ema3, "EMA 200", color=color.new(color.gray,   0), linewidth=2)
+
+p1 = plot(emaHigh, display=display.none)
+p2 = plot(emaLow,  display=display.none)
+fill(p1, p2, color=color.new(color.blue, 88), title="EMA Zone")
+
+bullStack = ema1 > ema2 and ema2 > ema3
+bearStack = ema1 < ema2 and ema2 < ema3
+
+// ─────────────────────────────────────────────
+// BEAR FVG L3c — for LONG setup
+// ─────────────────────────────────────────────
+bearFVGloose  = low[2] - high[0] > 0 and open[1] >= close[1]
+bearFVGstrict = low[2] - high[0] > 0 and open[2] >= close[2] and open[1] >= close[1] and open[0] >= close[0]
+pivotHigh     = high[1] > high[0] and high[1] > high[2]
+
+var float bL3cTop       = na
+var float bL3cBot       = na
+var int   bL3cStart     = na
+var bool  bL3cActive    = false
+var box   bL3cBox       = na
+var float bL3cPivHi     = na
+var bool  bL3cHasStrict = false
+var bool  bL3cInBull    = false
+
+if pivotHigh
+    bL3cPivHi     := high[1]
+    bL3cActive    := true
+    bL3cTop       := na
+    bL3cBot       := na
+    bL3cStart     := na
+    bL3cBox       := na
+    bL3cHasStrict := false
+    bL3cInBull    := false
+
+if bL3cActive
+    if close > open
+        bL3cInBull    := true
+        bL3cTop       := na
+        bL3cBot       := na
+        bL3cStart     := na
+        bL3cBox       := na
+        bL3cHasStrict := false
+    else
+        bL3cInBull := false
+    if bearFVGloose and not bL3cInBull
+        if bearFVGstrict
+            bL3cHasStrict := true
+        if na(bL3cTop)
+            bL3cTop   := low[2]
+            bL3cBot   := high[0]
+            bL3cStart := bar_index - 2
+        else
+            bL3cTop := math.max(bL3cTop, low[2])
+            bL3cBot := math.min(bL3cBot, high[0])
+        if bL3cHasStrict and showFVGBoxL
+            if not na(bL3cBox)
+                box.delete(bL3cBox)
+            bL3cBox := box.new(bL3cStart, bL3cTop, bar_index, bL3cBot, border_color=color.rgb(200,60,100), border_width=2, bgcolor=color.new(color.rgb(200,60,100), 75))
+
+if bL3cActive and not na(bL3cPivHi) and close > bL3cPivHi
+    bL3cActive := false
+
+// ─────────────────────────────────────────────
+// BULL FVG L3c — for SHORT setup
+// ─────────────────────────────────────────────
+bullFVGloose  = low[0] - high[2] > 0 and open[1] <= close[1]
+bullFVGstrict = low[0] - high[2] > 0 and open[2] <= close[2] and open[1] <= close[1] and open[0] <= close[0]
+pivotLow      = low[1] < low[0] and low[1] < low[2]
+
+var float uL3cTop       = na
+var float uL3cBot       = na
+var int   uL3cStart     = na
+var bool  uL3cActive    = false
+var box   uL3cBox       = na
+var float uL3cPivLo     = na
+var bool  uL3cHasStrict = false
+var bool  uL3cInBear    = false
+
+if pivotLow
+    uL3cPivLo     := low[1]
+    uL3cActive    := true
+    uL3cTop       := na
+    uL3cBot       := na
+    uL3cStart     := na
+    uL3cBox       := na
+    uL3cHasStrict := false
+    uL3cInBear    := false
+
+if uL3cActive
+    if close < open
+        uL3cInBear    := true
+        uL3cTop       := na
+        uL3cBot       := na
+        uL3cStart     := na
+        uL3cBox       := na
+        uL3cHasStrict := false
+    else
+        uL3cInBear := false
+    if bullFVGloose and not uL3cInBear
+        if bullFVGstrict
+            uL3cHasStrict := true
+        if na(uL3cTop)
+            uL3cTop   := low[0]
+            uL3cBot   := high[2]
+            uL3cStart := bar_index - 2
+        else
+            uL3cTop := math.max(uL3cTop, low[0])
+            uL3cBot := math.min(uL3cBot, high[2])
+        if uL3cHasStrict and showFVGBoxS
+            if not na(uL3cBox)
+                box.delete(uL3cBox)
+            uL3cBox := box.new(uL3cStart, uL3cBot, bar_index, uL3cTop, border_color=color.rgb(60,100,200), border_width=2, bgcolor=color.new(color.rgb(60,100,200), 75))
+
+if uL3cActive and not na(uL3cPivLo) and close < uL3cPivLo
+    uL3cActive := false
+
+// ─────────────────────────────────────────────
+// FVG SNAPSHOTS
+// ─────────────────────────────────────────────
+var float fvgTopL   = na
+var float fvgBotL   = na
+var int   fvgStartL = na
+var int   fvgBarL   = na
+
+if bL3cActive and bL3cHasStrict and not na(bL3cTop)
+    fvgTopL   := bL3cTop
+    fvgBotL   := bL3cBot
+    fvgStartL := bL3cStart
+    fvgBarL   := bar_index
+
+var float fvgTopS   = na
+var float fvgBotS   = na
+var int   fvgStartS = na
+var int   fvgBarS   = na
+
+if uL3cActive and uL3cHasStrict and not na(uL3cTop)
+    fvgTopS   := uL3cTop
+    fvgBotS   := uL3cBot
+    fvgStartS := uL3cStart
+    fvgBarS   := bar_index
+
+// FVG consumption — LONG
+if not na(fvgTopL) and close > fvgTopL and not (close > fvgTopL and close[1] <= fvgTopL and bullStack and (bar_index - fvgBarL) <= fvgLookback)
+    fvgTopL := na
+    fvgBotL := na
+    fvgStartL := na
+    fvgBarL := na
+
+// FVG consumption — SHORT
+if not na(fvgBotS) and close < fvgBotS and not (close < fvgBotS and close[1] >= fvgBotS and bearStack and (bar_index - fvgBarS) <= fvgLookback)
+    fvgTopS := na
+    fvgBotS := na
+    fvgStartS := na
+    fvgBarS := na
+
+// ─────────────────────────────────────────────
+// FUNCTIONS
+// ─────────────────────────────────────────────
+f_pivotLowInfo(startBarIdx, ema1Series, ema2Series, ema3Series) =>
+    float lowestLow    = low[1]
+    int   lowestOffset = 1
+    float closeAtBar   = close[1]
+    int n = bar_index - startBarIdx
+    if n > 0 and n <= 500
+        for i = 1 to n
+            if low[i] < lowestLow
+                lowestLow    := low[i]
+                lowestOffset := i
+                closeAtBar   := close[i]
+    [lowestLow, lowestOffset, closeAtBar]
+
+f_pivotHighInfo(startBarIdx, ema1Series, ema2Series, ema3Series) =>
+    float highestHigh  = high[1]
+    int   highestOffset = 1
+    float closeAtBar   = close[1]
+    int n = bar_index - startBarIdx
+    if n > 0 and n <= 500
+        for i = 1 to n
+            if high[i] > highestHigh
+                highestHigh   := high[i]
+                highestOffset := i
+                closeAtBar    := close[i]
+    [highestHigh, highestOffset, closeAtBar]
+
+f_allClosesAboveEma200(startBarIdx, ema200Series) =>
+    bool allAbove = true
+    int n = bar_index - startBarIdx
+    if n > 0 and n <= 500
+        for i = 1 to n
+            if close[i] < ema200Series[i]
+                allAbove := false
+    allAbove
+
+f_allClosesBelowEma200(startBarIdx, ema200Series) =>
+    bool allBelow = true
+    int n = bar_index - startBarIdx
+    if n > 0 and n <= 500
+        for i = 1 to n
+            if close[i] > ema200Series[i]
+                allBelow := false
+    allBelow
+
+f_countPivotLows(startBarIdx) =>
+    int count = 0
+    int n = bar_index - startBarIdx
+    if n >= 2 and n <= 500
+        for i = 2 to n - 1
+            if low[i] < low[i - 1] and low[i] < low[i + 1]
+                count += 1
+    count
+
+f_countPivotHighs(startBarIdx) =>
+    int count = 0
+    int n = bar_index - startBarIdx
+    if n >= 2 and n <= 500
+        for i = 2 to n - 1
+            if high[i] > high[i - 1] and high[i] > high[i + 1]
+                count += 1
+    count
+
+// ─────────────────────────────────────────────
+// LONG IFVG DETECTION
+// ─────────────────────────────────────────────
+ifvgFireL = not na(fvgTopL) and close > fvgTopL and close[1] <= fvgTopL and bullStack and (bar_index - fvgBarL) <= fvgLookback
+
+ifvgValidL           = false
+var int   pivLowOff  = na
+var float pivLowPx   = na
+var int   pvCountL   = na
+
+if ifvgFireL and not na(fvgStartL) and showLong
+    [pvLow, pvOffset, pvClose] = f_pivotLowInfo(fvgStartL, ema1, ema2, ema3)
+    ema33AtPivot    = ema1[pvOffset]
+    ema50AtPivot    = ema2[pvOffset]
+    ema200AtPivot   = ema3[pvOffset]
+    bullStackPivot  = ema50AtPivot > ema200AtPivot
+    wickTouchedZone = pvLow <= ema33AtPivot and pvClose >= ema50AtPivot
+    allAboveEma200  = f_allClosesAboveEma200(fvgStartL, ema3)
+    pivotLowCount   = f_countPivotLows(fvgStartL)
+    pivotOK         = pivotFilter == "All" or (pivotFilter == "Single pivot only" and pivotLowCount == 1) or (pivotFilter == "Multiple pivots only" and pivotLowCount > 1)
+    if allAboveEma200 and bullStackPivot and wickTouchedZone and pivotOK
+        ifvgValidL := true
+        pivLowOff  := pvOffset
+        pivLowPx   := pvLow
+        pvCountL   := pivotLowCount
+
+// ─────────────────────────────────────────────
+// SHORT IFVG DETECTION
+// ─────────────────────────────────────────────
+ifvgFireS = not na(fvgBotS) and close < fvgBotS and close[1] >= fvgBotS and bearStack and (bar_index - fvgBarS) <= fvgLookback
+
+ifvgValidS            = false
+var int   pivHighOff  = na
+var float pivHighPx   = na
+var int   pvCountS    = na
+
+if ifvgFireS and not na(fvgStartS) and showShort
+    [pvHigh, pvOffset, pvClose] = f_pivotHighInfo(fvgStartS, ema1, ema2, ema3)
+    ema33AtPivot    = ema1[pvOffset]
+    ema50AtPivot    = ema2[pvOffset]
+    ema200AtPivot   = ema3[pvOffset]
+    bearStackPivot  = ema50AtPivot < ema200AtPivot
+    // Short zone: wick must reach up to EMA33, close stays below EMA50
+    wickTouchedZone = pvHigh >= ema33AtPivot and pvClose <= ema50AtPivot
+    allBelowEma200  = f_allClosesBelowEma200(fvgStartS, ema3)
+    pivotHighCount  = f_countPivotHighs(fvgStartS)
+    pivotOK         = pivotFilter == "All" or (pivotFilter == "Single pivot only" and pivotHighCount == 1) or (pivotFilter == "Multiple pivots only" and pivotHighCount > 1)
+    if allBelowEma200 and bearStackPivot and wickTouchedZone and pivotOK
+        ifvgValidS := true
+        pivHighOff := pvOffset
+        pivHighPx  := pvHigh
+        pvCountS   := pivotHighCount
+
+// ─────────────────────────────────────────────
+// LONG DRAWINGS + STATE
+// ─────────────────────────────────────────────
+var bool  inTradeL = false
+var float slL = na
+var float tpL = na
+var line  slLineL = na
+var line  tpLineL = na
+var line  entLineL = na
+
+if ifvgValidL and not inTradeL
+    if showIFVGBoxL
+        box.new(fvgStartL, fvgTopL, bar_index, fvgBotL, border_color=color.teal, border_width=1, bgcolor=color.new(color.teal, 75))
+    if showPivotLowL
+        label.new(bar_index - pivLowOff, pivLowPx, "●\nPL", color=color.fuchsia, textcolor=color.white, style=label.style_label_up, size=size.small)
+    slL      := pivLowPx
+    tpL      := close + (close - pivLowPx)
+    inTradeL := true
+    fvgTopL  := na
+    fvgBotL  := na
+    fvgStartL := na
+    fvgBarL  := na
+    if showLevelsL
+        line.delete(slLineL)
+        line.delete(tpLineL)
+        line.delete(entLineL)
+        slLineL  := line.new(bar_index, slL,    bar_index + extBarsL, slL,    color=color.red,   width=1, style=line.style_dashed)
+        tpLineL  := line.new(bar_index, tpL,    bar_index + extBarsL, tpL,    color=color.green, width=1, style=line.style_dashed)
+        entLineL := line.new(bar_index, close,  bar_index + extBarsL, close,  color=color.white, width=1, style=line.style_dotted)
+        label.new(bar_index + 1, slL, "SL", color=color.red,   textcolor=color.white, style=label.style_label_left, size=size.small)
+        label.new(bar_index + 1, tpL, "TP", color=color.green, textcolor=color.white, style=label.style_label_left, size=size.small)
+
+if inTradeL and (high >= tpL or low <= slL)
+    inTradeL := false
+
+// ─────────────────────────────────────────────
+// SHORT DRAWINGS + STATE
+// ─────────────────────────────────────────────
+var bool  inTradeS = false
+var float slS = na
+var float tpS = na
+var line  slLineS = na
+var line  tpLineS = na
+var line  entLineS = na
+
+if ifvgValidS and not inTradeS
+    if showIFVGBoxS
+        box.new(fvgStartS, fvgBotS, bar_index, fvgTopS, border_color=color.rgb(255,100,0), border_width=1, bgcolor=color.new(color.rgb(255,100,0), 75))
+    if showPivotHighS
+        label.new(bar_index - pivHighOff, pivHighPx, "●\nPH", color=color.yellow, textcolor=color.black, style=label.style_label_down, size=size.small)
+    slS      := pivHighPx
+    tpS      := close - (pivHighPx - close)
+    inTradeS := true
+    fvgTopS  := na
+    fvgBotS  := na
+    fvgStartS := na
+    fvgBarS  := na
+    if showLevelsS
+        line.delete(slLineS)
+        line.delete(tpLineS)
+        line.delete(entLineS)
+        slLineS  := line.new(bar_index, slS,    bar_index + extBarsS, slS,    color=color.red,   width=1, style=line.style_dashed)
+        tpLineS  := line.new(bar_index, tpS,    bar_index + extBarsS, tpS,    color=color.green, width=1, style=line.style_dashed)
+        entLineS := line.new(bar_index, close,  bar_index + extBarsS, close,  color=color.white, width=1, style=line.style_dotted)
+        label.new(bar_index + 1, slS, "SL", color=color.red,   textcolor=color.white, style=label.style_label_left, size=size.small)
+        label.new(bar_index + 1, tpS, "TP", color=color.green, textcolor=color.white, style=label.style_label_left, size=size.small)
+
+if inTradeS and (low <= tpS or high >= slS)
+    inTradeS := false
+
+// ─────────────────────────────────────────────
+// SIGNAL SHAPES + COUNT LABELS
+// ─────────────────────────────────────────────
+longColor  = pvCountL == 1 ? color.teal   : color.new(color.teal,   40)
+shortColor = pvCountS == 1 ? color.orange : color.new(color.orange, 40)
+
+plotshape(ifvgValidL and not inTradeL[1] and showLong,  title="Long IFVG",  style=shape.labelup,   location=location.belowbar, color=longColor,  textcolor=color.white, text="▲ L", size=size.small)
+plotshape(ifvgValidS and not inTradeS[1] and showShort, title="Short IFVG", style=shape.labeldown, location=location.abovebar, color=shortColor, textcolor=color.white, text="▼ S", size=size.small)
+
+if ifvgValidL and not inTradeL[1] and showLong and showPivotCntL
+    label.new(bar_index, low,  "P:" + str.tostring(pvCountL), style=label.style_label_up,   color=color.new(longColor,  60), textcolor=color.white, size=size.tiny)
+if ifvgValidS and not inTradeS[1] and showShort and showPivotCntS
+    label.new(bar_index, high, "P:" + str.tostring(pvCountS), style=label.style_label_down, color=color.new(shortColor, 60), textcolor=color.white, size=size.tiny)
+
+// ─────────────────────────────────────────────
+// ALERTS
+// ─────────────────────────────────────────────
+// alertcondition uses const string only — dynamic info sent via alert() calls below
+alertcondition(ifvgValidL,            "🟢 Long Setup",  "JTrader EMA Inversion — LONG setup on {{ticker}} @ {{close}} | TF: {{interval}}")
+alertcondition(ifvgValidS,            "🔴 Short Setup", "JTrader EMA Inversion — SHORT setup on {{ticker}} @ {{close}} | TF: {{interval}}")
+alertcondition(ifvgValidL or ifvgValidS, "⚡ Any Setup", "JTrader EMA Inversion — setup on {{ticker}} @ {{close}} | TF: {{interval}}")
+
+// alert() allows dynamic strings — fires in real time when condition is true
+if ifvgValidL and enableAlertsL
+    alert("JTrader LONG — " + syminfo.ticker + " @ " + str.tostring(close) + " | TF: " + timeframe.period + " | Pivots: " + str.tostring(pvCountL), alert.freq_once_per_bar)
+if ifvgValidS and enableAlertsS
+    alert("JTrader SHORT — " + syminfo.ticker + " @ " + str.tostring(close) + " | TF: " + timeframe.period + " | Pivots: " + str.tostring(pvCountS), alert.freq_once_per_bar)
