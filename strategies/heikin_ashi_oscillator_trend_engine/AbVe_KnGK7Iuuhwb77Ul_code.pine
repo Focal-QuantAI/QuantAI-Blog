@@ -1,0 +1,2658 @@
+// ==============================================================================
+//  Heikin Ashi Momentum Pressure
+//  Author: © MYNAMEISBRANDON
+//  License: Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// ==============================================================================
+
+//@version=6
+indicator("Heikin Ashi Oscillator Trend Engine ", "HA OSC💥", overlay=false, calc_bars_count=2500)
+
+
+//  Heikin ASHI FUNCTION SOURCE
+// ------------------------------------------------------------------------------
+//  This script incorporates a Heikin Ashi calculation function adapted from
+//  open-source work by @SimpleCryptoLife in his indicator "Better Heikin Ashi" (v4).
+//  ➡️https://www.tradingview.com/v/Sz73I1P6/
+//  ➡️https://simplecrypto.life/free-scripts/
+//
+//  His work showed how Heikin Ashi values can smooth price structure and make
+//  directional shifts easier to read without requiring a full chart-type change.
+//
+//  In this script, that HA foundation is extended beyond candle visualization
+//  and repurposed into a standalone oscillator engine. The resulting output uses
+//  Heikin Ashi-derived values as the base for normalization, smoothing, and
+//  momentum-style interpretation in a separate pane.
+//
+//
+//  Heikin ASHI NOTES (adapted from @SimpleCryptoLife concepts)
+// ------------------------------------------------------------------------------
+//  • Heikin Ashi can smooth noisy price behavior and make directional movement
+//    easier to read.
+//  • HA direction changes can suggest reversal risk, pauses, or continuation,
+//    but they are not stand-alone trade signals.
+//  • In this script, HA is used as the foundation for a separate oscillator,
+//    not as a replacement for the chart's real price.
+//  • The oscillator is designed to help visualize momentum, directional pressure,
+//    and general trend behavior from HA-derived inputs.
+//  • Because these are derived values, they should be used with price structure,
+//    support/resistance, volume, and other confirmation tools.
+//  • Confirmed historical values do not repaint after bar close.
+//    Live bars may still update while they are forming.
+//
+//  DISCLAIMER
+// ------------------------------------------------------------------------------
+//  • For educational and informational purposes only.
+//  • Not financial advice.
+//  • You are fully responsible for your own trading decisions.
+//  • Always test and validate before using real money. Bar replay is a great tool 💥
+// ==============================================================================
+
+// ================================================================================
+// 🟢 REGION: Core Imports
+// ================================================================================
+//
+// 📌 Purpose:
+//     Loads the SimpleCryptoLife higher-timeframe helper used to stabilize
+//     requested HTF oscillator values inside a lower-timeframe pane.
+//
+// ================================================================================
+
+import SimpleCryptoLife/HighTimeframeSampling/4  as SCL_HTF
+import SimpleCryptoLife/LibraryTimeframeHelper/1 as TF
+
+// ================================================================================
+// 🔴 END REGION: Core Imports
+// ================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Group Names
+// ==============================================================================================
+
+const string G_ENGINE        = "HA Engine Configuration"
+const string G_CROSS         = "Adaptive MA Crossovers (faster)"
+const string G_CROSS_SMA     = "SMA 20 / 50 Crossovers (slower)"
+const string G_VWA           = "Rolling Volume Weighted Average of HA Engine"
+const string G_HTF           = "Higher-Timeframe Plot of HA Engine"
+const string G_PIVOT         = "Left/Right Trend Pivot Overlay"
+const string G_GUIDE         = "Guide Lines"
+const string G_VIS           = "Visuals"
+const string G_PRICE_CANDLES = "Price Chart Plotcandles"
+const string G_OSC_PRESSURE  = "HA Engine Candle Pressure"
+const string G_TABLE         = "Engine Table"
+
+// ==============================================================================================
+// 🔴 END REGION: Group Names
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Tooltip Strings
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Main Settings
+// ──────────────────────────────────────────────
+const string TT_ENGINE_MODE =
+     "Chooses which version of the oscillator the script uses.\n\n" +
+     "• HA Range Base:\n" +
+     "  A more direct and responsive version.\n" +
+     "  It can react faster to changes, but may look less smooth.\n\n" +
+     "• HA Blend:\n" +
+     "  A smoother version built from several blended components.\n" +
+     "  It can help reduce noise, but may react a little slower."
+
+const string TT_PLOT_LAST =
+     "Number of most recent bars shown for the histogram (default is plot.style_line) and any plots still tied to the main history control."
+
+const string TT_PLOT_LAST_CANDLES =
+     "Number of most recent bars shown for the oscillator candles.\n\n" +
+     "Use this to control candle history independently from the histogram."
+
+const string TT_DYNAMIC_LOOKBACK =
+     "Controls how the script chooses the lookback window used for normalization and the adaptive guide lines.\n\n" +
+     "Lookback = the number of bars used as the recent reference window.\n\n" +
+     "• Dynamic:\n" +
+     "  The script chooses the lookback automatically based on the chart timeframe.\n\n" +
+     "• Manual:\n" +
+     "  The script uses your Manual Lookback value instead.\n\n" +
+     "Lower lookbacks react faster.\n" +
+     "Higher lookbacks react more slowly."
+
+const string TT_MANUAL_LOOKBACK =
+     "Sets the exact number of bars used in the lookback window when Lookback Mode = Manual.\n\n" +
+     "Examples:\n" +
+     "• 55 = the last 55 bars\n" +
+     "• 144 = the last 144 bars\n" +
+     "• On a 5-minute chart, 144 bars ≈ 12 hours\n" +
+     "• On a 1-hour chart, 144 bars ≈ 6 days\n" +
+     "• On a 1-hour chart, 55 bars ≈ 2.3 days\n\n" +
+     "Smaller values make the oscillator more reactive.\n" +
+     "Larger values make it smoother and slower."
+
+const string TT_USE_CLAMP =
+     "Limits extreme oscillator spikes after z-score normalization."
+
+// const string TT_CLAMP_RANGE =
+//      "Maximum absolute value allowed when Clamp is enabled."
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Range Base Engine
+// ──────────────────────────────────────────────
+const string TT_RANGE_LEN =
+     "Sets the smoothing length for the HA Range Base engine.\n\n" +
+     "Smaller values react faster but can look noisier.\n" +
+     "Larger values react more slowly but look smoother."
+
+const string TT_RANGE_TYPE =
+     "Chooses the moving average type used by the HA Range Base engine.\n\n" +
+     "• EMA reacts faster to recent changes\n" +
+     "• SMA is steadier and slower"
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Blend Engine
+// ──────────────────────────────────────────────
+const string TT_BLEND_PAIR_SET =
+     "Selects the HA Blend preset used to build the blend engine.\n\n" +
+     "• Fast:\n" +
+     "  Uses the tighter early Fibonacci-style ladder.\n" +
+     "  Pairs: 5/8, 8/13, 13/21, 21/34\n\n" +
+     "• Balanced:\n" +
+     "  Uses the middle ladder.\n" +
+     "  Pairs: 13/21, 21/34, 34/55, 55/89\n\n" +
+     "• Slow:\n" +
+     "  Uses the slower ladder.\n" +
+     "  Pairs: 34/55, 55/89, 89/144, 144/233"
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Final Smoothing
+// ──────────────────────────────────────────────
+const string TT_FINAL_SMOOTH =
+     "Adds one more smoothing step after the selected oscillator engine is built.\n\n" +
+     "This can make the oscillator look cleaner and less noisy,\n" +
+     "but it may also make signals react a little later."
+
+const string TT_FINAL_SMOOTH_LEN =
+     "Sets how strong the final smoothing step is.\n\n" +
+     "Smaller values keep the oscillator more responsive.\n" +
+     "Larger values make it smoother and slower."
+
+const string TT_FINAL_SMOOTH_TYPE =
+     "Chooses the moving average type used for the final smoothing step.\n\n" +
+     "• EMA reacts faster\n" +
+     "• SMA is steadier"
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Adaptive Crossovers
+// ──────────────────────────────────────────────
+const string TT_CROSS_MODE =
+     "Shows or hides the main crossover lines.\n\n" +
+     "These lines compare a faster oscillator average against a slower one\n" +
+     "to help show shifts in momentum."
+
+const string TT_CROSS_FILL_MODE =
+     "Shows or hides the colored fill between the main fast and slow crossover lines."
+
+const string TT_TF_MODE_CROSS =
+     "Chooses how the fast and slow crossover lengths are set.\n\n" +
+     "• Auto:\n" +
+     "  The script adjusts the lengths for the current chart timeframe.\n\n" +
+     "• Manual:\n" +
+     "  The script uses the Fast Line Length and Slow Line Length values you choose."
+
+const string TT_FAST_MA_TYPE =
+     "Chooses the moving average type for the faster crossover line.\n\n" +
+     "EMA usually reacts faster.\n" +
+     "SMA is usually smoother."
+
+const string TT_FAST_LEN_MANUAL =
+     "Sets the length of the faster crossover line when Signal Crossover Mode = Manual.\n\n" +
+     "Smaller values react faster."
+
+const string TT_SLOW_MA_TYPE =
+     "Chooses the moving average type for the slower crossover line."
+
+const string TT_SLOW_LEN_MANUAL =
+     "Sets the length of the slower crossover line when Signal Crossover Mode = Manual.\n\n" +
+     "Larger values react more slowly and create a steadier baseline."
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: SMA 20 / 50 Crossovers
+// ──────────────────────────────────────────────
+const string TT_SIGNALS_MODE_SMA =
+     "Shows or hides the fixed 20 / 50 crossover lines.\n\n" +
+     "This is a more traditional crossover view that does not adapt by timeframe."
+
+const string TT_FILL_MODE_SMA =
+     "Shows or hides the fill between the 20 / 50 crossover lines."
+
+const string TT_FAST_MA_TYPE_SMA =
+     "Chooses the moving average type for the faster 20-length line."
+
+const string TT_FAST_LEN_SMA =
+     "Sets the length of the faster line in this fixed crossover pair."
+
+const string TT_SLOW_MA_TYPE_SMA =
+     "Chooses the moving average type for the slower 50-length line."
+
+const string TT_SLOW_LEN_SMA =
+     "Sets the length of the slower line in this fixed crossover pair."
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Oscillator Volume-Weighted Average
+// ──────────────────────────────────────────────
+const string TT_SHOW_OSC_VWA =
+     "Shows a volume-weighted average of the selected oscillator.\n\n" +
+     "Higher-volume bars contribute more heavily to the average, which helps the line respond more to stronger participation."
+
+const string TT_OSC_VWA_DISPLAY_MODE =
+     "Controls how the oscillator's volume-weighted average is displayed.\n\n" +
+     "• Last 'N' Bars → shows only the most recent segment\n" +
+     "• None → hides the plot"
+
+const string TT_OSC_VWA_SHOW_LAST =
+     "Number of most recent bars shown for the oscillator VWA plot."
+
+const string TT_OSC_VWA_LEN_MODE =
+     "Controls whether the oscillator VWA length is selected automatically by timeframe or manually."
+
+const string TT_OSC_VWA_LEN =
+     "Lookback length used by the oscillator's volume-weighted average when Length Mode = Manual.\n\n" +
+     "Higher values smooth the line more.\n" +
+     "Lower values make it more reactive.\n\n" +
+     "Auto reference:\n" +
+     "• <1m (Seconds) → 55\n" +
+     "• 1–3m          → 21\n" +
+     "• 5–10m         → 34\n" +
+     "• 15–30m        → 48\n" +
+     "• 1–2h          → 55\n" +
+     "• 4–8h          → 48\n" +
+     "• 1D–21D        → 34\n" +
+     "• 1W–10W        → 21\n" +
+     "• 1M–12M        → 13"
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Higher-Timeframe Oscillator
+// ──────────────────────────────────────────────
+const string TT_USE_DYNAMIC_HTF =
+     "Chooses how the higher-timeframe oscillator reference line is selected.\n\n" +
+     "• Dynamic:\n" +
+     "  The script automatically steps up to a higher timeframe.\n" +
+     "  Example: a 5-minute chart may use a higher reference like 15-minute.\n\n" +
+     "• Manual:\n" +
+     "  The script uses the exact higher timeframe you choose below."
+
+const string TT_MANUAL_HTF_SELECTION =
+     "Sets the higher timeframe used when HTF Mode = Manual.\n\n" +
+     "Example:\n" +
+     "• If your chart is 5m and you choose 60, the blue HTF oscillator line comes from the 1-hour timeframe.\n\n" +
+     "Chart = use the current chart timeframe instead."
+
+const string TT_HTF_OSC_DISPLAY_MODE =
+     "Controls how the higher-timeframe oscillator reference line is displayed.\n\n" +
+     "• Last N Bars → shows only the most recent segment\n" +
+     "• None → hides the HTF oscillator reference line"
+
+const string TT_HTF_OSC_SHOW_LAST =
+     "Number of most recent bars shown when HTF Oscillator Display Mode = Last N Bars."
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Trend Pivot Overlay
+// ──────────────────────────────────────────────
+const string TT_SHOW_PIVOT_OVERLAY =
+     "Shows a structure line built from confirmed oscillator pivot highs and pivot lows.\n\n" +
+     "This can help you see whether the oscillator is currently leaning from a recent high pivot or a recent low pivot."
+
+const string TT_SHOW_PIVOT_OVERLAY_OBJ =
+     "Shows or hides the horizontal pivot-based line object.\n\n" +
+     "This is separate from the plotted Trend Pivot Overlay line, so you can show either one or both."
+
+const string TT_PIVOT_MODE =
+     "Chooses which confirmed pivot the overlay follows.\n\n" +
+     "• Pivot High = always follows confirmed oscillator highs\n" +
+     "• Pivot Low = always follows confirmed oscillator lows\n" +
+     "• Dynamic = switches between them based on recent structure"
+
+const string TT_LEFT_BARS =
+     "Sets how many bars to the left are required to confirm a pivot.\n\n" +
+     "Higher values usually make pivots stricter and less frequent."
+
+const string TT_RIGHT_BARS =
+     "Sets how many bars to the right are required before a pivot is confirmed.\n\n" +
+     "Higher values delay confirmation, but can reduce false pivots."
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Guide Lines
+// ──────────────────────────────────────────────
+const string TT_GUIDE_SHOW_LAST =
+     "Number of most recent bars shown for the guide lines.\n\n" +
+     "This lets you control guide-line history separately from the histogram and other plots."
+
+const string TT_SHOW_ZERO =
+     "Shows the zero line, which is the oscillator's center baseline.\n\n" +
+     "Readings above zero are positive relative to the script's current calculation.\n" +
+     "Readings below zero are negative."
+
+const string TT_SHOW_HALF =
+     "Shows the adaptive +50% and -50% guide lines.\n\n" +
+     "These are not fixed levels.\n" +
+     "They move with the oscillator's recent range and can help show when the oscillator is stretching away from zero."
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Visuals
+// ──────────────────────────────────────────────
+const string TT_SHOW_HIST =
+     "Shows or hides the main oscillator plot."
+
+const string TT_SHOW_OSC_CANDLES =
+     "Shows candle-style bars built from the oscillator instead of price.\n\n" +
+     "This can make it easier to see whether the oscillator is expanding, slowing, or reversing from one bar to the next."
+
+const string TT_OSC_CANDLE_TRANSP =
+     "Controls the body transparency of the oscillator candles.\n\n" +
+     "0 = solid\n" +
+     "100 = invisible"
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Engine Table
+// ──────────────────────────────────────────────
+const string TT_SHOW_ENGINE_TABLE =
+     "Shows a compact table that summarizes the active oscillator engine.\n\n" +
+     "The matching engine-detail row is highlighted so users can quickly see\n" +
+     "whether the script is currently running the HA Range Base path or the\n" +
+     "HA Blend path."
+
+const string TT_ENGINE_TABLE_POS =
+     "Controls where the Engine Table appears inside the oscillator pane."
+
+const string TT_ENGINE_TABLE_TEXT =
+     "Controls the text size used by the Engine Table."
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Price Overlay Candles
+// ──────────────────────────────────────────────
+const string TT_PRICE_CANDLE_MODE =
+     "Controls whether the script draws colored candles on the main price chart.\n\n" +
+     "• Oscillator Colors:\n" +
+     "  Price candles are colored by the oscillator's current color state.\n\n" +
+     "• None:\n" +
+     "  No overlay candles are drawn."
+
+const string TT_PRICE_CANDLE_SHOW_LAST =
+     "Sets how many of the most recent chart candles are drawn with the oscillator-color overlay."
+
+const string TT_PRICE_CANDLE_BODY_TRANSP =
+     "Controls the body transparency of the overlay candles drawn on the main price chart.\n\n" +
+     "0 = solid body\n" +
+     "100 = invisible body\n\n" +
+     "Wicks and borders stay fully visible."
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: OSC Candle Pressure Envelope Tooltips
+// ──────────────────────────────────────────────
+//
+// 📌 Purpose:
+//     These tooltips explain the controls used to build and style the
+//     oscillator candle pressure envelope.
+//
+// 🧠 What these settings control:
+//     • Whether the envelope is shown
+//     • The upper and lower trigger levels
+//     • How thick the envelope is around the oscillator candles
+//     • What colors are used when upper or lower pressure is active
+//
+const string TT_SHOW_OSC_PRESSURE_ENV =
+     "Wraps the oscillator candles in a pressure-style background envelope.\n\n" +
+     "The envelope is built around each oscillator candle's high/low range,\n" +
+     "then only turns on when the candle reaches the trigger levels below."
+
+const string TT_OSC_PRESSURE_UPPER =
+     "Upper trigger level for the oscillator candle pressure envelope.\n\n" +
+     "When the oscillator candle reaches or exceeds this level,\n" +
+     "the upper pressure envelope fill turns on."
+
+const string TT_OSC_PRESSURE_LOWER =
+     "Lower trigger level for the oscillator candle pressure envelope.\n\n" +
+     "When the oscillator candle reaches or falls below this level,\n" +
+     "the lower pressure envelope fill turns on."
+
+const string TT_OSC_PRESSURE_PAD =
+     "Extra padding added above and below the oscillator candle range\n" +
+     "when drawing the pressure envelope.\n\n" +
+     "Higher values make the envelope thicker."
+
+const string TT_OSC_PRESSURE_UPPER_COLOR =
+     "Fill color used when the oscillator candle reaches the upper trigger."
+
+const string TT_OSC_PRESSURE_LOWER_COLOR =
+     "Fill color used when the oscillator candle reaches the lower trigger."
+
+const string TT_OSC_PRESSURE_FILL_TRANSP =
+     "Controls the transparency used by both oscillator pressure-envelope fills.\n\n" +
+     "0 = solid fill\n" +
+     "100 = invisible fill"
+
+// ==============================================================================================
+// 🔴 END REGION: Tooltip Strings
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Inputs
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Engine Configuration
+// ──────────────────────────────────────────────
+string in_lookbackMode = input.string(
+     defval="Dynamic",
+     title="Lookback Mode",
+     options=["Dynamic", "Manual"],
+     group=G_ENGINE,
+     tooltip=TT_DYNAMIC_LOOKBACK)
+
+bool in_useDynamicLookback =
+     in_lookbackMode == "Dynamic"
+
+int in_manualLookback = input.int(
+     defval=144,
+     minval=10,
+     title="  ↳ Manual Lookback",
+     group=G_ENGINE,
+     tooltip=TT_MANUAL_LOOKBACK)
+
+bool in_useClamp = true //input.bool(
+    //  defval=true,
+    //  title="Clamp Output",
+    //  group=G_ENGINE,
+    //  tooltip=TT_USE_CLAMP)
+
+float in_clampRange = 15.0
+
+string in_engineMode = input.string(
+     defval="HA Blend",
+     title="Engine Mode",
+     options=["HA Range Base", "HA Blend"],
+     group=G_ENGINE,
+     tooltip=TT_ENGINE_MODE)
+
+int in_rangeLen = input.int(
+     defval=55,
+     minval=1,
+     title="  ↳ HA Range Base Length",
+     group=G_ENGINE,
+     tooltip=TT_RANGE_LEN)
+
+string in_rangeMaType = input.string(
+     defval="EMA",
+     title="  ↳ HA Range Base MA Type",
+     options=["EMA", "SMA"],
+     group=G_ENGINE,
+     tooltip=TT_RANGE_TYPE)
+
+string in_blendPairSet = input.string(
+     defval="Balanced",
+     title="  ↳ HA Blend Pair Set",
+     options=["Fast", "Balanced", "Slow"],
+     group=G_ENGINE,
+     tooltip=TT_BLEND_PAIR_SET)
+
+string in_finalSmoothMode = input.string(
+     defval="On",
+     title="Final Smoothing (Both Engines)",
+     options=["On", "Off"],
+     group=G_ENGINE,
+     tooltip=TT_FINAL_SMOOTH)
+
+bool in_useFinalSmooth =
+     in_finalSmoothMode == "On"
+
+int in_finalSmoothLen = input.int(
+     defval=3,
+     minval=1,
+     title="  ↳ Final Smoothing Length",
+     group=G_ENGINE,
+     tooltip=TT_FINAL_SMOOTH_LEN)
+
+string in_finalSmoothType = input.string(
+     defval="EMA",
+     title="  ↳ Final Smoothing Type",
+     options=["EMA", "SMA"],
+     group=G_ENGINE,
+     tooltip=TT_FINAL_SMOOTH_TYPE)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Adaptive Crossovers
+// ──────────────────────────────────────────────
+string in_crossMode = input.string(
+     defval="Show Crossovers",
+     title="Adaptive Crossovers",
+     options=["Show Crossovers", "None"],
+     group=G_CROSS,
+     tooltip=TT_CROSS_MODE)
+
+bool in_showCrossLines =
+     in_crossMode == "Show Crossovers"
+
+string in_crossFillMode = input.string(
+     defval="Show Fill",
+     title="Fill Crossovers",
+     options=["Show Fill", "None"],
+     group=G_CROSS,
+     tooltip=TT_CROSS_FILL_MODE)
+
+bool in_showCrossFill =
+     in_crossFillMode == "Show Fill"
+
+string in_tfMode_Cross = input.string(
+     defval="Auto",
+     title="Signal Crossover Mode",
+     options=["Auto", "Manual"],
+     group=G_CROSS,
+     tooltip=TT_TF_MODE_CROSS)
+
+string in_fastMaType = input.string(
+     defval="EMA",
+     title="Fast Line Type",
+     options=["EMA", "SMA"],
+     group=G_CROSS,
+     tooltip=TT_FAST_MA_TYPE)
+
+int in_fastLen_manual = input.int(
+     defval=5,
+     minval=1,
+     title="Fast Line Length",
+     group=G_CROSS,
+     tooltip=TT_FAST_LEN_MANUAL)
+
+string in_slowMaType = input.string(
+     defval="EMA",
+     title="Slow Line Type",
+     options=["EMA", "SMA"],
+     group=G_CROSS,
+     tooltip=TT_SLOW_MA_TYPE)
+
+int in_slowLen_manual = input.int(
+     defval=21,
+     minval=1,
+     title="Slow Line Length",
+     group=G_CROSS,
+     tooltip=TT_SLOW_LEN_MANUAL)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: SMA 20 / 50 Crossovers
+// ──────────────────────────────────────────────
+string in_SignalsMode_sma = input.string(
+     defval="Show Crossovers",
+     title="SMA 20/50 Crossovers",
+     options=["Show Crossovers", "None"],
+     group=G_CROSS_SMA,
+     tooltip=TT_SIGNALS_MODE_SMA)
+
+bool in_showSignals_sma =
+     in_SignalsMode_sma == "Show Crossovers"
+
+string in_FillMode_sma = input.string(
+     defval="Show Fill",
+     title="Fill SMA 20/50 Crossovers",
+     options=["Show Fill", "None"],
+     group=G_CROSS_SMA,
+     tooltip=TT_FILL_MODE_SMA)
+
+bool in_showFill_sma =
+     in_FillMode_sma == "Show Fill"
+
+string in_MaType_fast_sma = input.string(
+     defval="SMA",
+     title="Fast Line Type",
+     options=["EMA", "SMA"],
+     group=G_CROSS_SMA,
+     tooltip=TT_FAST_MA_TYPE_SMA)
+
+int in_Len_fast_sma = input.int(
+     defval=20,
+     minval=1,
+     title="Fast Line Length",
+     group=G_CROSS_SMA,
+     tooltip=TT_FAST_LEN_SMA)
+
+string in_MaType_slow_sma = input.string(
+     defval="SMA",
+     title="Slow Line Type",
+     options=["EMA", "SMA"],
+     group=G_CROSS_SMA,
+     tooltip=TT_SLOW_MA_TYPE_SMA)
+
+int in_Len_slow_sma = input.int(
+     defval=50,
+     minval=1,
+     title="Slow Line Length",
+     group=G_CROSS_SMA,
+     tooltip=TT_SLOW_LEN_SMA)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Oscillator Volume-Weighted Average
+// ──────────────────────────────────────────────
+string in_showOscVwaMode = input.string(
+     defval="Show",
+     title="Show Oscillator VWA",
+     options=["Show", "Hide"],
+     group=G_VWA,
+     tooltip=TT_SHOW_OSC_VWA)
+
+bool in_showOscVwa =
+     in_showOscVwaMode == "Show"
+
+string in_oscVwaDisplayMode = input.string(
+     defval="Last 'N' Bars",
+     title="Oscillator VWA Display Mode",
+     options=["Last 'N' Bars", "None"],
+     group=G_VWA,
+     tooltip=TT_OSC_VWA_DISPLAY_MODE)
+
+int in_oscVwaShowLast = input.int(
+     defval=55,
+     minval=1,
+     title="Oscillator VWA - Show Last 'N' Bars",
+     group=G_VWA,
+     tooltip=TT_OSC_VWA_SHOW_LAST)
+
+string in_oscVwaLenMode = input.string(
+     defval="Auto",
+     title="Oscillator VWA Length Mode",
+     options=["Auto", "Manual"],
+     group=G_VWA,
+     tooltip=TT_OSC_VWA_LEN_MODE)
+
+int in_oscVwaLenManual = input.int(
+     defval=55,
+     minval=1,
+     title="Oscillator VWA Length",
+     group=G_VWA,
+     tooltip=TT_OSC_VWA_LEN)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Higher-Timeframe Oscillator
+// ──────────────────────────────────────────────
+string in_htfMode = input.string(
+     defval="Dynamic",
+     title="HTF Mode",
+     options=["Dynamic", "Manual"],
+     group=G_HTF,
+     tooltip=TT_USE_DYNAMIC_HTF)
+
+bool in_useDynamicHtf =
+     in_htfMode == "Dynamic"
+
+string in_manualHtfSelection = input.string(
+     defval="Chart",
+     title="Manual Higher Timeframe",
+     options=["Chart", "30S", "1", "2", "3", "4", "5", "10", "15", "30", "45", "60", "120", "240", "480", "D", "W", "2W", "M", "2M"],
+     group=G_HTF,
+     tooltip=TT_MANUAL_HTF_SELECTION)
+
+string in_htfOscMode = input.string(
+     defval="Last N Bars",
+     title="HTF Oscillator Display Mode",
+     options=["Last N Bars", "None"],
+     group=G_HTF,
+     tooltip=TT_HTF_OSC_DISPLAY_MODE)
+
+int in_htfOscShowLast = input.int(
+     defval=55,
+     minval=1,
+     maxval=1000,
+     title="HTF Oscillator - Show Last 'N' Bars",
+     group=G_HTF,
+     tooltip=TT_HTF_OSC_SHOW_LAST)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Trend Pivot Overlay
+// ──────────────────────────────────────────────
+string in_trendOverlayMode = input.string(
+     defval="Hide",
+     title="Trend Pivot Overlay",
+     options=["Show", "Hide"],
+     group=G_PIVOT,
+     tooltip=TT_SHOW_PIVOT_OVERLAY)
+
+bool in_showTrendOverlay =
+     in_trendOverlayMode == "Show"
+
+string in_trendOverlayObjMode = input.string(
+     defval="Show",
+     title="Trend Pivot Overlay Object Line",
+     options=["Show", "Hide"],
+     group=G_PIVOT,
+     tooltip=TT_SHOW_PIVOT_OVERLAY_OBJ)
+
+bool in_showTrendOverlayObj =
+     in_trendOverlayObjMode == "Show"
+
+string in_pivotMode = input.string(
+     defval="Dynamic",
+     title="Pivot Anchor Mode",
+     options=["Pivot High", "Pivot Low", "Dynamic"],
+     group=G_PIVOT,
+     tooltip=TT_PIVOT_MODE)
+
+int in_leftBars = input.int(
+     defval=21,
+     minval=1,
+     title="Left Bars",
+     group=G_PIVOT,
+     tooltip=TT_LEFT_BARS)
+
+int in_rightBars = input.int(
+     defval=5,
+     minval=1,
+     title="Right Bars",
+     group=G_PIVOT,
+     tooltip=TT_RIGHT_BARS)
+
+color in_overlayBullColor = input.color(
+     defval=color.orange,
+     title="Trend Overlay Bull Color",
+     group=G_PIVOT)
+
+color in_overlayBearColor = input.color(
+     defval=#f51673,
+     title="Trend Overlay Bear Color",
+     group=G_PIVOT)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Guide Lines
+// ──────────────────────────────────────────────
+int in_guideShowLast = input.int(
+     defval=233,
+     minval=1,
+     title="Guide Lines Plot Last N Bars",
+     group=G_GUIDE,
+     tooltip=TT_GUIDE_SHOW_LAST)
+
+string in_zeroLineMode = input.string(
+     defval="Show",
+     title="Zero Line",
+     options=["Show", "Hide"],
+     group=G_GUIDE,
+     tooltip=TT_SHOW_ZERO)
+
+bool in_showZeroLine =
+     in_zeroLineMode == "Show"
+
+string in_halfLinesMode = input.string(
+     defval="Show",
+     title="±50% Guide Lines",
+     options=["Show", "Hide"],
+     group=G_GUIDE,
+     tooltip=TT_SHOW_HALF)
+
+bool in_showHalfLines =
+     in_halfLinesMode == "Show"
+
+color in_zeroLineColor = input.color(
+     defval=#dbdbdb,
+     title="Zero Line Color",
+     group=G_GUIDE)
+
+color in_upperGuideColor = input.color(
+     defval=#ff693b,
+     title="+50% Guide Color",
+     group=G_GUIDE)
+
+color in_lowerGuideColor = input.color(
+     defval=#f32753,
+     title="-50% Guide Color",
+     group=G_GUIDE)
+
+/// ──────────────────────────────────────────────
+// 🟦 Subregion: Visuals
+// ──────────────────────────────────────────────
+string in_oscCandlesMode = input.string(
+     defval="Show",
+     title="Oscillator Candles",
+     options=["Show", "Hide"],
+     group=G_VIS,
+     tooltip=TT_SHOW_OSC_CANDLES)
+
+bool in_showOscCandles =
+     in_oscCandlesMode == "Show"
+
+int in_oscCandleTransp = input.int(
+     defval=65,
+     minval=0,
+     maxval=100,
+     title="  ↳Oscillator Candle Body Transparency",
+     group=G_VIS,
+     tooltip=TT_OSC_CANDLE_TRANSP)
+
+int in_plotLastCandles = input.int(
+     defval=144,
+     minval=1,
+     title="  ↳ Oscillator Candle Plot Last N Bars",
+     group=G_VIS,
+     tooltip=TT_PLOT_LAST_CANDLES)
+
+string in_histogramMode = input.string(
+     defval="Show",
+     title="Histogram",
+     options=["Show", "Hide"],
+     group=G_VIS,
+     tooltip=TT_SHOW_HIST)
+
+int in_plotLast = input.int(
+     defval=21,
+     minval=1,
+     title="  ↳ Histogram Plot Last N Bars",
+     group=G_VIS,
+     tooltip=TT_PLOT_LAST)
+
+bool in_showHistogram =
+     in_histogramMode == "Show"
+
+// string in_colorPriceBarsMode = input.string(
+//      defval="Hide",
+//      title="Color Price Bars",
+//      options=["Show", "Hide"],
+//      group=G_VIS,
+//      tooltip=TT_COLOR_PRICE_BARS)
+
+// bool in_colorPriceBars =
+//      in_colorPriceBarsMode == "Show"
+
+color in_colAboveRise = input.color(
+     defval=color.orange,
+     title="Above 0 Rising",
+     group=G_VIS)
+
+color in_colAboveFall = input.color(
+     defval=color.new(#fff177, 0),
+     title="Above 0 Falling",
+     group=G_VIS)
+
+color in_colBelowFall = input.color(
+     defval=color.new(#57585c, 0),
+     title="Below 0 Falling",
+     group=G_VIS)
+
+color in_colBelowRise = input.color(
+     defval=color.new(#97999e, 0),
+     title="Below 0 Rising",
+     group=G_VIS)
+
+color in_colAbove50Rise = input.color(
+     defval=#ff5900,
+     title="Above +50 Rising",
+     group=G_VIS)
+
+color in_colBelow50Fall = input.color(
+     defval=#e900ca,
+     title="Below -50 Falling",
+     group=G_VIS)
+
+color in_crossBullColor = input.color(
+     defval=color.rgb(44, 161, 190),
+     title="Cross Bull Color",
+     group=G_VIS)
+
+color in_crossBearColor = input.color(
+     defval=#f51673,
+     title="Cross Bear Color",
+     group=G_VIS)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Engine Table
+// ──────────────────────────────────────────────
+string in_engineTableMode = input.string(
+     defval="Show",
+     title="Engine Table",
+     options=["Show", "Hide"],
+     group=G_TABLE,
+     tooltip=TT_SHOW_ENGINE_TABLE)
+
+bool in_showEngineTable =
+     in_engineTableMode == "Show"
+
+string in_engineTablePos = input.string(
+     defval="Middle Right",
+     title="Engine Table Position",
+     options=["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"],
+     group=G_TABLE,
+     tooltip=TT_ENGINE_TABLE_POS)
+
+string in_engineTableTextSize = input.string(
+     defval="Normal",
+     title="Engine Table Text Size",
+     options=["Tiny", "Small", "Normal", "Large"],
+     group=G_TABLE,
+     tooltip=TT_ENGINE_TABLE_TEXT)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Price Chart Plotcandles
+// ──────────────────────────────────────────────
+string in_priceCandleMode = input.string(
+     defval="Oscillator Colors",
+     title="Price Chart Plotcandles",
+     options=["Oscillator Colors", "None"],
+     group=G_PRICE_CANDLES,
+     tooltip=TT_PRICE_CANDLE_MODE)
+
+bool in_showPriceCandles =
+     in_priceCandleMode != "None"
+
+bool in_useOscColorForPriceCandles =
+     in_priceCandleMode == "Oscillator Colors"
+
+int in_priceCandleShowLast = input.int(
+     defval=233,
+     minval=1,
+     title="  ↳ Price Chart Plotcandles - Last N Bars",
+     group=G_PRICE_CANDLES,
+     tooltip=TT_PRICE_CANDLE_SHOW_LAST)
+
+int in_priceCandleBodyTransp = input.int(
+     defval=70,
+     minval=0,
+     maxval=100,
+     title="  ↳ Price Chart Plotcandles Transparency",
+     group=G_PRICE_CANDLES,
+     tooltip=TT_PRICE_CANDLE_BODY_TRANSP)
+
+/// ──────────────────────────────────────────────
+// 🟦 Subregion: OSC Candle Pressure Envelope
+// ──────────────────────────────────────────────
+//
+// 📌 Purpose:
+//     Controls the pressure-style envelope that wraps the oscillator candles
+//     when they reach user-defined upper or lower trigger zones.
+//
+// 🧠 What these settings control:
+//     • Whether the envelope is shown
+//     • The upper and lower trigger levels
+//     • The padding used to wrap the oscillator candle range
+//     • The fill colors used for upper and lower pressure states
+//
+string in_oscPressureEnvelopeMode = input.string(
+     defval="Show",
+     title="OSC Candle Pressure Envelope",
+     options=["Show", "Hide"],
+     group=G_OSC_PRESSURE,
+     tooltip=TT_SHOW_OSC_PRESSURE_ENV)
+
+bool in_showOscPressureEnvelope =
+     in_oscPressureEnvelopeMode == "Show"
+
+float in_oscPressureUpperTrigger = input.float(
+     defval=0.50,
+     step=0.05,
+     title="Upper Trigger",
+     group=G_OSC_PRESSURE,
+     tooltip=TT_OSC_PRESSURE_UPPER)
+
+float in_oscPressureLowerTrigger = input.float(
+     defval=-0.50,
+     step=0.05,
+     title="Lower Trigger",
+     group=G_OSC_PRESSURE,
+     tooltip=TT_OSC_PRESSURE_LOWER)
+
+float in_oscPressureEnvelopePad = input.float(
+     defval=0.05,
+     minval=0.0,
+     step=0.01,
+     title="Envelope Padding",
+     group=G_OSC_PRESSURE,
+     tooltip=TT_OSC_PRESSURE_PAD)
+
+color in_oscPressureUpperFill = input.color(
+     defval=#ff5900,
+     title="Upper Envelope Fill",
+     group=G_OSC_PRESSURE,
+     tooltip=TT_OSC_PRESSURE_UPPER_COLOR)
+
+color in_oscPressureLowerFill = input.color(
+     defval=#e900ca,
+     title="Lower Envelope Fill",
+     group=G_OSC_PRESSURE,
+     tooltip=TT_OSC_PRESSURE_LOWER_COLOR)
+
+int in_oscPressureFillTransp = input.int(
+     defval=75,
+     minval=0,
+     maxval=100,
+     title="Fill Transparency",
+     group=G_OSC_PRESSURE,
+     tooltip=TT_OSC_PRESSURE_FILL_TRANSP)
+
+// ==============================================================================================
+// 🔴 END REGION: Inputs
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Helpers
+// ==============================================================================================
+//
+// 📌 Purpose:
+//     Houses the small reusable utility functions that support the core HA engine,
+//     normalization, slope logic, color logic, and Heikin Ashi calculations.
+//
+// 🧩 Why this matters in this script:
+//     These helpers keep the main engine regions cleaner and make shared logic
+//     easier to reuse consistently across the script.
+//
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Moving Average Selector
+// ──────────────────────────────────────────────
+//
+// 📌 Purpose:
+//     Returns either an SMA or EMA from the same source and length inputs.
+//
+// 🧠 Behavior:
+//     • Calculates both SMA and EMA each bar
+//     • Returns the one selected by `_type`
+//     • Keeps TA calls outside the final ternary decision so Pine evaluates
+//       them consistently bar to bar
+//
+// 🧩 Why this matters in this script:
+//     This helper is reused anywhere the script lets the user choose between
+//     SMA and EMA behavior, such as the Range Base engine and crossover engines.
+//
+f_ma(float _src, int _len, string _type) =>
+    float _sma = ta.sma(_src, _len)
+    float _ema = ta.ema(_src, _len)
+    _type == "SMA" ? _sma : _ema
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Adaptive Lookback Resolver
+// ──────────────────────────────────────────────
+//
+// 📌 Purpose:
+//     Chooses the lookback window used by normalization and adaptive guide logic.
+//
+// 🧠 Behavior:
+//     • If `_dynamic` is false, the function returns the manual input
+//     • If `_dynamic` is true, the function maps the current chart timeframe
+//       by timeframe family and multiplier instead of exact string matches
+//     • This keeps extended periods like 2D, 3D, 2W, and 6M inside a
+//       dynamic bucket instead of falling back to manual
+//
+// 🧩 Why this matters in this script:
+//     This keeps normalization and guide-line behavior more consistent across
+//     expanded daily / weekly / monthly chart periods.
+//
+f_lookback(bool _dynamic, int _manual) =>
+    if not _dynamic
+        _manual
+    else if timeframe.isseconds
+        timeframe.multiplier <= 30 ? 377 :
+         timeframe.multiplier <= 45 ? 233 :
+         _manual
+    else if timeframe.isminutes
+        timeframe.multiplier <= 3 ? 233 :
+         timeframe.multiplier <= 15 ? 144 :
+         timeframe.multiplier <= 30 ? 89 :
+         timeframe.multiplier <= 120 ? 55 :
+         timeframe.multiplier <= 480 ? 34 :
+         21
+    else if timeframe.isdaily
+        timeframe.multiplier <= 34 ? 21 : 13
+    else if timeframe.isweekly
+        timeframe.multiplier <= 21 ? 13 : 8
+    else if timeframe.ismonthly
+        timeframe.multiplier <= 12 ? 8 : 5
+    else
+        _manual
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Z-Score Normalization + Clamp
+// ──────────────────────────────────────────────
+//
+// 📌 Purpose:
+//     Normalizes a source series by its rolling standard deviation, then
+//     optionally clamps extreme values.
+//
+// 🧠 Behavior:
+//     • Computes rolling standard deviation over `_len`
+//     • Converts the source into a simplified z-score style reading
+//     • If `_useClamp` is true, limits the final value to the range
+//       `-_clamp` to `+_clamp`
+//
+// 🧩 Why this matters in this script:
+//     This helps keep oscillator values more consistent across tickers and
+//     timeframes while preventing a few extreme spikes from distorting the panel.
+//
+f_zscoreClamp(float _src, int _len, bool _useClamp, float _clamp) =>
+    float _stdev = ta.stdev(_src, _len)
+    float _z = _stdev != 0 ? _src / _stdev : 0
+    _useClamp ? math.max(math.min(_z, _clamp), -_clamp) : _z
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Quadrant Color Resolver
+// ──────────────────────────────────────────────
+//
+// 📌 Purpose:
+//     Assigns one of four colors to the oscillator based on two conditions:
+//     • whether the value is above or below zero
+//     • whether the value is rising or falling versus the prior bar
+//
+// 🧠 Behavior:
+//     • Above 0 + Rising  → `_upRise`
+//     • Above 0 + Falling → `_upFall`
+//     • Below 0 + Falling → `_dnFall`
+//     • Below 0 + Rising  → `_dnRise`
+//
+// 🧩 Why this matters in this script:
+//     This is the shared color engine that gives the histogram and oscillator
+//     candles their four-quadrant momentum look.
+//
+f_quadrantColor(float _src, color _upRise, color _upFall, color _dnFall, color _dnRise) =>
+    bool _rising = _src > _src[1]
+    bool _falling = _src < _src[1]
+    _src >= 0 and _rising  ? _upRise :
+     _src >= 0 and _falling ? _upFall :
+     _src < 0 and _falling ? _dnFall :
+     _dnRise
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Threshold Visual Color Resolver
+// ──────────────────────────────────────────────
+//
+// 📌 Purpose:
+//     Extends the script's visual color logic to recognize the adaptive +50 / -50
+//     guide zones in addition to the zero-line quadrants.
+//
+// 🧠 Behavior:
+//     • Above +50 + Rising  → special dark orange
+//     • Above 0  + Falling  → existing yellow
+//     • Above 0  + Rising   → existing orange
+//     • Below -50 + Falling → special purple
+//     • Below 0  + Falling  → existing dark gray
+//     • Below 0  + Rising   → existing light gray
+//
+// 🧩 Why this matters in this script:
+//     This lets the histogram, candles, follow line, price-overlay candles,
+//     and Engine Table all respond to the same threshold-aware color logic.
+//
+f_visualThresholdColor(
+     float _src,
+     float _upperGuide,
+     float _lowerGuide,
+     color _above50Rise,
+     color _above0Rise,
+     color _above0Fall,
+     color _below0Fall,
+     color _below50Fall,
+     color _below0Rise) =>
+
+    bool _rising =
+         _src > _src[1]
+
+    bool _falling =
+         _src < _src[1]
+
+    bool _above50 =
+         not na(_upperGuide) and
+         _upperGuide > 0 and
+         _src >= _upperGuide
+
+    bool _below50 =
+         not na(_lowerGuide) and
+         _lowerGuide < 0 and
+         _src <= _lowerGuide
+
+    _above50 and _rising ? _above50Rise :
+     _src >= 0 and _falling ? _above0Fall :
+     _src >= 0 and _rising ? _above0Rise :
+     _below50 and _falling ? _below50Fall :
+     _src < 0 and _falling ? _below0Fall :
+     _below0Rise
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Heiken Ashi Builder
+// ──────────────────────────────────────────────
+//
+// 📌 Purpose:
+//     Calculates the synthetic Heikin Ashi OHLC values used by the script.
+//
+// 🧠 Behavior:
+//     • Computes HA Open from the prior HA Open / HA Close relationship
+//     • Computes HA Close from the average of the real OHLC values
+//     • Computes HA High and HA Low from the current high/low and HA body
+//     • Returns HA direction flags for bullish / bearish state
+//
+// 🧩 Why this matters in this script:
+//     This is the foundation of the entire oscillator. Everything else in the
+//     script begins with these HA-derived values rather than raw candle structure.
+//
+functionHeikinAshi(_open, _close, _high, _low, _haOpen1, _haClose1) =>
+    float _iHAOpen = barstate.isfirst ? (_open + _close) / 2 : (_haOpen1 + _haClose1) / 2
+    float _iHAClose = (_open + _close + _high + _low) / 4
+    float _iHAHigh = barstate.isfirst ? _high : math.max(_high, _iHAOpen, _iHAClose)
+    float _iHALow = barstate.isfirst ? _low : math.min(_low, _iHAOpen, _iHAClose)
+    bool _iIsHAUp = _iHAClose > _iHAOpen
+    bool _iIsHADown = _iHAClose <= _iHAOpen
+    [_iHAOpen, _iHAClose, _iHAHigh, _iHALow, _iIsHAUp, _iIsHADown]
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Table Helpers
+// ──────────────────────────────────────────────
+f_tablePos(string _pos) =>
+    _pos == "Top Left" ? position.top_left :
+     _pos == "Top Center" ? position.top_center :
+     _pos == "Top Right" ? position.top_right :
+     _pos == "Middle Left" ? position.middle_left :
+     _pos == "Middle Center" ? position.middle_center :
+     _pos == "Middle Right" ? position.middle_right :
+     _pos == "Bottom Left" ? position.bottom_left :
+     _pos == "Bottom Center" ? position.bottom_center : position.bottom_right
+
+f_tableTextSize(string _size) =>
+    _size == "Tiny" ? size.tiny :
+     _size == "Small" ? size.small :
+     _size == "Large" ? size.large : size.normal
+
+f_onOff(bool _v) =>
+    _v ? "On" : "Off"
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Table Contrast Text Helper
+// ──────────────────────────────────────────────
+//
+// 📌 Purpose:
+//     Chooses black or white table text based on the brightness of a cell's
+//     background color.
+//
+// 🧠 Behavior:
+//     • Estimates perceived brightness using a simple luma formula
+//     • Returns black text for lighter backgrounds
+//     • Returns white text for darker backgrounds
+//
+// 🧩 Why this matters in this script:
+//     The Engine Table can now inherit live engine colors from the active
+//     oscillator base, so this helper keeps the text readable regardless of
+//     whether the row is currently orange, yellow, gray, or another quadrant color.
+//
+f_tableContrastText(color _bg) =>
+    float _luma =
+         color.r(_bg) * 0.299 +
+         color.g(_bg) * 0.587 +
+         color.b(_bg) * 0.114
+    _luma >= 150 ? #000000 : color.white
+    
+// ==============================================================================================
+// 🔴 END REGION: Helpers
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Heikin Ashi Foundation
+// ==============================================================================================
+
+var float HAOpen = 0.0
+var float HAClose = 0.0
+var float HAHigh = 0.0
+var float HALow = 0.0
+var bool isHAUp = false
+var bool isHADown = false
+
+[r_HAOpen, r_HAClose, r_HAHigh, r_HALow, r_isHAUp, r_isHADown] =
+     functionHeikinAshi(
+         open,
+         close,
+         high,
+         low,
+         HAOpen[1],
+         HAClose[1])
+
+HAOpen := r_HAOpen
+HAClose := r_HAClose
+HAHigh := r_HAHigh
+HALow := r_HALow
+isHAUp := r_isHAUp
+isHADown := r_isHADown
+
+int normPeriod = f_lookback(in_useDynamicLookback, in_manualLookback)
+
+float haRangeNormPct =
+     r_HAClose != 0 ? ((r_HAHigh - r_HALow) / r_HAClose) * 100 : 0
+
+float haRangeSource =
+     haRangeNormPct
+
+float haSignedBase =
+     isHAUp ? haRangeSource : -haRangeSource
+
+float haSignedPrepared =
+     f_zscoreClamp(
+         haSignedBase,
+         normPeriod,
+         in_useClamp,
+         in_clampRange)
+
+// ==============================================================================================
+// 🔴 END REGION: Heikin Ashi Foundation
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Range Base Engine
+// ==============================================================================================
+
+float rangeEngineCore =
+     f_ma(
+         haSignedPrepared,
+         in_rangeLen,
+         in_rangeMaType)
+
+// ==============================================================================================
+// 🔴 END REGION: Range Base Engine
+// ==============================================================================================
+
+/// ==============================================================================================
+// 🟢 REGION: Blend Engine
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: HA Blend EMA Ladder
+// ──────────────────────────────────────────────
+//
+// 📌 Purpose:
+//     Builds the EMA ladder used by the preset-driven HA Blend engine.
+//
+// 🧩 Why this matters in this script:
+//     HA Blend now uses one selected Fibonacci-style pair set instead of a
+//     manually mixed toggle collection.
+//
+float ha_5 = ta.ema(haSignedPrepared, 5)
+float ha_8 = ta.ema(haSignedPrepared, 8)
+float ha_13 = ta.ema(haSignedPrepared, 13)
+float ha_21 = ta.ema(haSignedPrepared, 21)
+float ha_34 = ta.ema(haSignedPrepared, 34)
+float ha_55 = ta.ema(haSignedPrepared, 55)
+float ha_89 = ta.ema(haSignedPrepared, 89)
+float ha_144 = ta.ema(haSignedPrepared, 144)
+float ha_233 = ta.ema(haSignedPrepared, 233)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: HA Blend Pair-Set Resolver
+// ──────────────────────────────────────────────
+//
+// 📌 Purpose:
+//     Resolves which preset pair ladder is active for HA Blend.
+//
+// 🧠 Presets:
+//     • Fast     = 5/8, 8/13, 13/21, 21/34
+//     • Balanced = 13/21, 21/34, 34/55, 55/89
+//     • Slow     = 34/55, 55/89, 89/144, 144/233
+//
+float blendPair_1 =
+     in_blendPairSet == "Fast" ? (ha_5 + ha_8) / 2 :
+     in_blendPairSet == "Balanced" ? (ha_13 + ha_21) / 2 :
+     (ha_34 + ha_55) / 2
+
+float blendPair_2 =
+     in_blendPairSet == "Fast" ? (ha_8 + ha_13) / 2 :
+     in_blendPairSet == "Balanced" ? (ha_21 + ha_34) / 2 :
+     (ha_55 + ha_89) / 2
+
+float blendPair_3 =
+     in_blendPairSet == "Fast" ? (ha_13 + ha_21) / 2 :
+     in_blendPairSet == "Balanced" ? (ha_34 + ha_55) / 2 :
+     (ha_89 + ha_144) / 2
+
+float blendPair_4 =
+     in_blendPairSet == "Fast" ? (ha_21 + ha_34) / 2 :
+     in_blendPairSet == "Balanced" ? (ha_55 + ha_89) / 2 :
+     (ha_144 + ha_233) / 2
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: HA Blend Pair Averaging
+// ──────────────────────────────────────────────
+//
+// 📌 Purpose:
+//     Averages the active preset's four pair midpoints into one blend engine.
+//
+float blendEngineCore =
+     (blendPair_1 + blendPair_2 + blendPair_3 + blendPair_4) / 4
+
+// ==============================================================================================
+// 🔴 END REGION: Blend Engine
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Selected Output Engine
+// ==============================================================================================
+
+float rangeEngine =
+     in_useFinalSmooth ? f_ma(rangeEngineCore, in_finalSmoothLen, in_finalSmoothType) : rangeEngineCore
+
+float blendEngine =
+     in_useFinalSmooth ? f_ma(blendEngineCore, in_finalSmoothLen, in_finalSmoothType) : blendEngineCore
+
+
+float osc =
+     in_engineMode == "HA Range Base" ? rangeEngine : blendEngine
+
+color rangeEngineColor =
+     f_quadrantColor(
+         rangeEngine,
+         in_colAboveRise,
+         in_colAboveFall,
+         in_colBelowFall,
+         in_colBelowRise)
+
+color blendEngineColor =
+     f_quadrantColor(
+         blendEngine,
+         in_colAboveRise,
+         in_colAboveFall,
+         in_colBelowFall,
+         in_colBelowRise)
+
+color oscColor =
+     f_quadrantColor(
+         osc,
+         in_colAboveRise,
+         in_colAboveFall,
+         in_colBelowFall,
+         in_colBelowRise)
+
+// ==============================================================================================
+// 🔴 END REGION: Selected Output Engine
+// ==============================================================================================
+
+
+// ==============================================================================================
+// 🟢 REGION: Auxiliary Oscillator Series
+// ==============================================================================================
+//
+// 📌 Purpose:
+//     Builds all secondary oscillator-side support series that sit on top of the
+//     selected unified HA oscillator (`osc`), but do not change the core engine itself.
+//
+// 🧠 What lives here:
+//     • Adaptive crossover engine
+//     • Standalone SMA 20 / 50 crossover engine
+//     • Rolling oscillator VWA
+//     • Pivot-overlay state + derived baseline
+//     • Guide-line reference values
+//     • Synthetic oscillator candle OHLC + colors
+//
+// 🧩 Why this matters in this script:
+//     The core HA engine decides what the oscillator is.
+//     This region decides how that oscillator is interpreted, smoothed visually,
+//     and prepared for plots, fills, and overlays.
+//
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Adaptive Crossovers
+// ──────────────────────────────────────────────
+//
+// 📌 Purpose:
+//     Builds the primary timeframe-aware fast / slow crossover engine.
+//
+// 🧠 Behavior:
+//     • Auto mode picks fast / slow lengths by chart timeframe bucket
+//     • Manual mode uses the user's direct fast / slow inputs
+//     • Uses the selected oscillator (`osc`) as the source
+//     • Maintains a persistent bull / bear crossover state for line and fill color
+//
+// 🧩 Why this matters in this script:
+//     This is the main crossover engine meant to adapt itself across chart speeds,
+//     so lower timeframes stay responsive while higher timeframes stay more stable.
+//
+
+// Adaptive fast-length table by timeframe bucket.
+int len_Fast_0 = 8
+int len_Fast_1 = 5
+int len_Fast_2 = 8
+int len_Fast_3 = 13
+int len_Fast_4 = 13
+int len_Fast_5 = 21
+int len_Fast_6 = 13
+int len_Fast_7 = 8
+int len_Fast_8 = 5
+
+// Adaptive slow-length table by timeframe bucket.
+int len_Slow_0 = 21
+int len_Slow_1 = 13
+int len_Slow_2 = 21
+int len_Slow_3 = 34
+int len_Slow_4 = 48
+int len_Slow_5 = 48
+int len_Slow_6 = 34
+int len_Slow_7 = 21
+int len_Slow_8 = 13
+
+// Auto-select the adaptive fast length from the current chart timeframe bucket.
+int crossFastLen_auto =
+     timeframe.isseconds and timeframe.multiplier <= 45 ? len_Fast_0 :
+     timeframe.isminutes and timeframe.multiplier <= 3 ? len_Fast_1 :
+     timeframe.isminutes and timeframe.multiplier <= 10 ? len_Fast_2 :
+     timeframe.isminutes and timeframe.multiplier <= 30 ? len_Fast_3 :
+     timeframe.isminutes and timeframe.multiplier <= 120 ? len_Fast_4 :
+     timeframe.isminutes and timeframe.multiplier <= 480 ? len_Fast_5 :
+     timeframe.isdaily and timeframe.multiplier <= 34 ? len_Fast_6 :
+     timeframe.isweekly and timeframe.multiplier <= 21 ? len_Fast_7 :
+     timeframe.ismonthly and timeframe.multiplier <= 13 ? len_Fast_8 :
+     in_fastLen_manual
+
+// Auto-select the adaptive slow length from the current chart timeframe bucket.
+int crossSlowLen_auto =
+     timeframe.isseconds and timeframe.multiplier <= 45 ? len_Slow_0 :
+     timeframe.isminutes and timeframe.multiplier <= 3 ? len_Slow_1 :
+     timeframe.isminutes and timeframe.multiplier <= 10 ? len_Slow_2 :
+     timeframe.isminutes and timeframe.multiplier <= 30 ? len_Slow_3 :
+     timeframe.isminutes and timeframe.multiplier <= 120 ? len_Slow_4 :
+     timeframe.isminutes and timeframe.multiplier <= 480 ? len_Slow_5 :
+     timeframe.isdaily and timeframe.multiplier <= 34 ? len_Slow_6 :
+     timeframe.isweekly and timeframe.multiplier <= 21 ? len_Slow_7 :
+     timeframe.ismonthly and timeframe.multiplier <= 13 ? len_Slow_8 :
+     in_slowLen_manual
+
+// Resolve runtime lengths after the Auto / Manual decision.
+int crossFastLen_rt =
+     in_tfMode_Cross == "Auto" ? crossFastLen_auto : in_fastLen_manual
+
+int crossSlowLen_rt =
+     in_tfMode_Cross == "Auto" ? crossSlowLen_auto : in_slowLen_manual
+
+// Build the adaptive fast / slow lines from the shared oscillator source.
+float fastLine =
+     f_ma(
+         osc,
+         crossFastLen_rt,
+         in_fastMaType)
+
+float slowLine =
+     f_ma(
+         osc,
+         crossSlowLen_rt,
+         in_slowMaType)
+
+// Detect actual crossover events.
+bool bullCross =
+     ta.crossover(fastLine, slowLine)
+
+bool bearCross =
+     ta.crossunder(fastLine, slowLine)
+
+// Persist the active crossover state so color stays stable between events.
+var bool crossBullState = false
+crossBullState := bullCross ? true : bearCross ? false : crossBullState
+
+// Primary adaptive crossover colors.
+color crossLineCol =
+     crossBullState ? color.new(in_crossBullColor, 27) : color.new(in_crossBearColor, 27)
+
+color crossFillCol =
+     in_showCrossFill ? (crossBullState ? color.new(in_crossBullColor, 77) : color.new(in_crossBearColor, 77)) : na
+
+
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: SMA 20 / 50 Crossovers
+// ──────────────────────────────────────────────
+//
+// 📌 Purpose:
+//     Builds the standalone fixed-length crossover engine.
+//
+// 🧠 Behavior:
+//     • Uses its own MA type inputs and lengths
+//     • Runs independently of the adaptive crossover engine
+//     • Lets users compare a fixed classic pair against the adaptive pair
+//
+// 🧩 Why this matters in this script:
+//     Some users want a stable reference pair regardless of timeframe.
+//     This second engine provides that without interfering with the adaptive one.
+//
+
+// Build the standalone SMA-engine fast / slow lines from the same oscillator source.
+float fastLine_sma =
+     f_ma(
+         osc,
+         in_Len_fast_sma,
+         in_MaType_fast_sma)
+
+float slowLine_sma =
+     f_ma(
+         osc,
+         in_Len_slow_sma,
+         in_MaType_slow_sma)
+
+// Detect standalone crossover events.
+bool bullCross_sma =
+     ta.crossover(fastLine_sma, slowLine_sma)
+
+bool bearCross_sma =
+     ta.crossunder(fastLine_sma, slowLine_sma)
+
+// Persist the fixed-engine crossover state.
+var bool crossBullState_sma = false
+crossBullState_sma := bullCross_sma ? true : bearCross_sma ? false : crossBullState_sma
+
+// Standalone SMA-engine colors.
+color crossLineCol_sma =
+     crossBullState_sma ? color.new(in_crossBullColor, 25) : color.new(in_crossBearColor, 25)
+
+color crossFillCol_sma =
+     in_showFill_sma ? (crossBullState_sma ? color.new(in_crossBullColor, 75) : color.new(in_crossBearColor, 75)) : na
+
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Rolling Oscillator VWA
+// ──────────────────────────────────────────────
+//
+// 📌 Purpose:
+//     Builds a volume-weighted average of the selected oscillator using the
+//     same adaptive structure as the CE oscillator reference script.
+//
+// 🧠 Behavior:
+//     • Supports Auto or Manual length selection
+//     • Uses volume adjusted by its own SMA as the weighting factor
+//     • Can later be displayed as Last 'N' Bars or hidden entirely
+//
+// 🧩 Why this matters in this script:
+//     This makes the oscillator VWA more adaptive across timeframes and a bit
+//     more participation-aware than the simpler rolling VWA version.
+//
+
+// Adaptive VWA length table by timeframe bucket.
+int len_OscVwa_0 = 55
+int len_OscVwa_1 = 21
+int len_OscVwa_2 = 34
+int len_OscVwa_3 = 48
+int len_OscVwa_4 = 55
+int len_OscVwa_5 = 48
+int len_OscVwa_6 = 34
+int len_OscVwa_7 = 21
+int len_OscVwa_8 = 13
+
+// Auto-select the VWA length from the current chart timeframe bucket.
+int oscVwaLen_auto =
+     timeframe.isseconds and timeframe.multiplier <= 45 ? len_OscVwa_0 :
+     timeframe.isminutes and timeframe.multiplier <= 3 ? len_OscVwa_1 :
+     timeframe.isminutes and timeframe.multiplier <= 10 ? len_OscVwa_2 :
+     timeframe.isminutes and timeframe.multiplier <= 30 ? len_OscVwa_3 :
+     timeframe.isminutes and timeframe.multiplier <= 120 ? len_OscVwa_4 :
+     timeframe.isminutes and timeframe.multiplier <= 480 ? len_OscVwa_5 :
+     timeframe.isdaily and timeframe.multiplier <= 34 ? len_OscVwa_6 :
+     timeframe.isweekly and timeframe.multiplier <= 21 ? len_OscVwa_7 :
+     timeframe.ismonthly and timeframe.multiplier <= 13 ? len_OscVwa_8 :
+     in_oscVwaLenManual
+
+// Resolve runtime length after the Auto / Manual decision.
+int oscVwaLen =
+     in_oscVwaLenMode == "Auto" ? oscVwaLen_auto : in_oscVwaLenManual
+
+// Build a participation-adjusted volume weighting model.
+float oscVwaVolAdj =
+     volume / ta.sma(volume, oscVwaLen)
+
+float oscVwaWeightedSum =
+     math.sum(osc * oscVwaVolAdj, oscVwaLen)
+
+float oscVwaWeightSum =
+     math.sum(oscVwaVolAdj, oscVwaLen)
+
+float oscVwa =
+     oscVwaWeightSum != 0 ? oscVwaWeightedSum / oscVwaWeightSum : na
+
+// CE-style constant VWA color.
+color oscVwaColor =
+     oscVwa > oscVwa[1] ? color.new(#00e5ff, 0) : color.new(#00e5ff, 0)
+
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Trend Pivot Overlay State
+// ──────────────────────────────────────────────
+//
+// 📌 Purpose:
+//     Tracks confirmed oscillator pivots and derives the pivot-overlay baseline.
+//
+// 🧠 Behavior:
+//     • Confirms pivots using left / right bar logic
+//     • Keeps only positive pivots for highs and negative pivots for lows
+//     • Stores the most recent confirmed pivot-high and pivot-low anchors
+//     • Uses pivot order to infer whether the active structure is downtrend or uptrend
+//     • Resolves a single overlay baseline from the chosen pivot mode
+//
+// 🧩 Why this matters in this script:
+//     This gives the oscillator a structural bias line that can behave like a
+//     regime baseline rather than just another moving average.
+//
+
+// Raw pivot detections on the oscillator itself.
+float pivotLowRaw =
+     ta.pivotlow(osc, in_leftBars, in_rightBars)
+
+float pivotHighRaw =
+     ta.pivothigh(osc, in_leftBars, in_rightBars)
+
+// Keep only below-zero pivot lows and above-zero pivot highs.
+// This preserves polarity-aware structure logic.
+float pivotLow =
+     osc[in_rightBars] < 0 ? pivotLowRaw : na
+
+float pivotHigh =
+     osc[in_rightBars] > 0 ? pivotHighRaw : na
+
+bool isPivotLow =
+     not na(pivotLow)
+
+bool isPivotHigh =
+     not na(pivotHigh)
+
+// Persistent storage for the most recent confirmed pivot anchors.
+var float overlayPivotHigh = na
+var float overlayPivotLow = na
+var int highPivotBar = na
+var int lowPivotBar = na
+
+// Update stored pivot-high anchor when a new oscillator high pivot confirms.
+if isPivotHigh
+    overlayPivotHigh := pivotHigh
+    highPivotBar := bar_index - in_rightBars
+
+// Update stored pivot-low anchor when a new oscillator low pivot confirms.
+if isPivotLow
+    overlayPivotLow := pivotLow
+    lowPivotBar := bar_index - in_rightBars
+
+// The overlay is ready only after both a confirmed high pivot and low pivot exist.
+bool overlayReady =
+     not na(overlayPivotHigh) and not na(overlayPivotLow)
+
+// Trend direction is inferred from pivot order:
+// if the latest stored high pivot is more recent than the low pivot, structure is downtrend.
+bool isDowntrend =
+     overlayReady ? highPivotBar > lowPivotBar : false
+
+bool isDynamicMode =
+     in_pivotMode == "Dynamic"
+
+bool isPivotLowMode =
+     in_pivotMode == "Pivot Low"
+
+// Resolve the active overlay baseline.
+// • Dynamic     → flips between pivot high / pivot low by structure
+// • Pivot Low   → always use pivot low
+// • Pivot High  → always use pivot high
+float overlayLine =
+     isDynamicMode ? (isDowntrend ? overlayPivotHigh : overlayPivotLow) :
+     isPivotLowMode ? overlayPivotLow :
+     overlayPivotHigh
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Trend Pivot Overlay Line Object
+// ──────────────────────────────────────────────
+// Draws a true pivot-anchored horizontal segment that uses the same resolved
+// baseline as the Trend Pivot Overlay plot, then colors it by oscillator position.
+//
+// Color model:
+// • overlay above 0 = bull color
+// • overlay below 0 = bear color
+// • overlay exactly 0 = neutral plot color
+
+var line overlayLineObj = na
+
+int overlayAnchorBar =
+     isDowntrend ? highPivotBar : lowPivotBar
+
+color overlayObjColor =
+     na(overlayLine) ? na :
+     overlayLine > 0 ? in_overlayBearColor :
+     overlayLine < 0 ? in_overlayBullColor :
+     color.gray
+
+if in_showTrendOverlayObj and overlayReady and not na(overlayLine) and not na(overlayAnchorBar)
+    if na(overlayLineObj)
+        overlayLineObj := line.new(
+             x1=overlayAnchorBar,
+             y1=overlayLine,
+             x2=bar_index,
+             y2=overlayLine,
+             xloc=xloc.bar_index,
+             color=overlayObjColor,
+             width=1,
+             style=line.style_solid)
+    else
+        line.set_xy1(overlayLineObj, overlayAnchorBar, overlayLine)
+        line.set_xy2(overlayLineObj, bar_index, overlayLine)
+        line.set_color(overlayLineObj, overlayObjColor)
+else
+    if not na(overlayLineObj)
+        line.delete(overlayLineObj)
+        overlayLineObj := na
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Guide-Line Values
+// ──────────────────────────────────────────────
+//
+// 📌 Purpose:
+//     Precomputes the adaptive reference levels used by the oscillator guide plots.
+//
+// 🧠 How these guide lines are built:
+//     • zeroLine is fixed at 0 and acts as the oscillator's neutral baseline
+//     • upperGuide is set to 50% of the highest oscillator value seen over the current lookback
+//     • lowerGuide is set to 50% of the lowest oscillator value seen over the current lookback
+//
+//     In other words, the ±50 guide lines are not hardcoded levels.
+//     They are recalculated from the oscillator's own recent range:
+//
+//     • upperGuide = highest(osc, normPeriod) * 0.5
+//     • lowerGuide = lowest(osc, normPeriod) * 0.5
+//
+// 🧩 Practical interpretation:
+//     These lines act like adaptive "soft boundary" rails for the oscillator.
+//     Because they are based on recent oscillator extremes, they expand when the
+//     histogram / oscillator candles become more stretched, and contract when the
+//     oscillator compresses.
+//
+//     This means they can behave similarly to overbought / oversold lines,
+//     but only relative to the oscillator's recent behavior, not as fixed thresholds.
+//
+// 🧩 Why they visually move with the histogram / candles:
+//     The guide lines do not read the candle plots directly.
+//     They use the same underlying oscillator series (`osc`) that also drives:
+//     • the histogram columns
+//     • the oscillator candles
+//
+//     Since all of those visuals come from the same source series, the guide lines
+//     naturally adapt along with the histogram and oscillator candles.
+//
+// 🧩 Why this matters in this script:
+//     Keeping these values precomputed here makes the later plot section cleaner,
+//     while also giving the script adaptive reference rails instead of static levels.
+//
+
+float zeroLine = 0.0
+
+float upperGuide =
+     ta.highest(osc, normPeriod) * 0.5
+
+float lowerGuide =
+     ta.lowest(osc, normPeriod) * 0.5
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Threshold-Aware Visual Colors
+// ──────────────────────────────────────────────
+//
+// 📌 Purpose:
+//     Builds the shared threshold-aware visual colors used across the histogram,
+//     oscillator candles, price-overlay candles, follow line, and Engine Table.
+//
+color rangeEngineVisualColor =
+     f_visualThresholdColor(
+         rangeEngine,
+         upperGuide,
+         lowerGuide,
+         in_colAbove50Rise,
+         in_colAboveRise,
+         in_colAboveFall,
+         in_colBelowFall,
+         in_colBelow50Fall,
+         in_colBelowRise)
+
+color blendEngineVisualColor =
+     f_visualThresholdColor(
+         blendEngine,
+         upperGuide,
+         lowerGuide,
+         in_colAbove50Rise,
+         in_colAboveRise,
+         in_colAboveFall,
+         in_colBelowFall,
+         in_colBelow50Fall,
+         in_colBelowRise)
+
+color oscVisualColor =
+     f_visualThresholdColor(
+         osc,
+         upperGuide,
+         lowerGuide,
+         in_colAbove50Rise,
+         in_colAboveRise,
+         in_colAboveFall,
+         in_colBelowFall,
+         in_colBelow50Fall,
+         in_colBelowRise)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Synthetic Oscillator Candle Series
+// ──────────────────────────────────────────────
+//
+// 📌 Purpose:
+//     Converts the oscillator into candle-ready OHLC values for `plotcandle()`.
+//
+// 🧠 Construction:
+//     • open  = prior oscillator value
+//     • high  = higher of prior/current oscillator value
+//     • low   = lower of prior/current oscillator value
+//     • close = current oscillator value
+//
+// 🧩 Why this matters in this script:
+//     This gives the oscillator a candle-style readout, which can make acceleration,
+//     deceleration, and bar-to-bar reversals easier to see than a line alone.
+//
+
+float oscOpen =
+     osc[1]
+
+float oscHigh =
+     math.max(osc[1], osc)
+
+float oscLow =
+     math.min(osc[1], osc)
+
+float oscClose =
+     osc
+
+color oscBodyColor =
+     color.new(oscVisualColor, in_oscCandleTransp)
+
+color oscEdgeColor =
+     oscVisualColor
+
+
+// ==============================================================================================
+// 🔴 END REGION: Auxiliary Oscillator Series
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: OSC Pressure Envelope State
+// ==============================================================================================
+//
+// 📌 Purpose:
+//     Builds a continuous envelope around the active oscillator and turns
+//     the fill on only when the oscillator reaches the user-defined trigger zones.
+//
+// ==============================================================================================
+
+float oscPressureCenter = osc
+
+float oscPressureUpper =
+     oscPressureCenter + in_oscPressureEnvelopePad
+
+float oscPressureLower =
+     oscPressureCenter - in_oscPressureEnvelopePad
+
+color oscPressureFillColor =
+     not in_showOscPressureEnvelope ? na :
+     osc >= in_oscPressureUpperTrigger ? color.new(in_oscPressureUpperFill, in_oscPressureFillTransp) :
+     osc <= in_oscPressureLowerTrigger ? color.new(in_oscPressureLowerFill, in_oscPressureFillTransp) :
+     na
+
+// ==============================================================================================
+// 🔴 END REGION: OSC Pressure Envelope State
+// ==============================================================================================
+
+// ================================================================================
+// 🟢 REGION: Higher-Timeframe Oscillator Selector
+// ================================================================================
+//
+// 📌 Purpose:
+//     Resolves which higher timeframe should be used for the oscillator
+//     reference line.
+//
+// 🧠 Behavior:
+//     • Dynamic mode steps up to the next logical chart timeframe
+//     • Manual mode uses the exact user-selected timeframe
+//
+// ================================================================================
+f_getNextTf() =>
+    string _nextTf = ""
+    float _mult = timeframe.multiplier
+
+    if timeframe.isseconds
+        _nextTf :=
+             timeframe.period == "1S"  ? "5S"  :
+             timeframe.period == "5S"  ? "10S" :
+             timeframe.period == "10S" ? "15S" :
+             timeframe.period == "15S" ? "30S" :
+             timeframe.period == "30S" ? "45S" :
+             timeframe.period == "45S" ? "1"   : "1"
+
+    else if timeframe.isminutes
+        _nextTf :=
+             _mult <= 1   ? "3"   :
+             _mult <= 2   ? "4"   :
+             _mult <= 3   ? "5"   :
+             _mult <= 5   ? "10"  :
+             _mult <= 10  ? "15"  :
+             _mult <= 15  ? "30"  :
+             _mult <= 30  ? "60"  :
+             _mult <= 60  ? "120" :
+             _mult <= 120 ? "240" :
+             _mult <= 240 ? "480" : "D"
+
+    else if timeframe.isdaily
+        _nextTf := "1W"
+    else if timeframe.isweekly
+        _nextTf := "2W"
+    else if timeframe.ismonthly
+        _nextTf := "2M"
+    else
+        _nextTf := "1D"
+
+    _nextTf
+
+string selectedHtf =
+     in_manualHtfSelection == "Chart" ? timeframe.period : in_manualHtfSelection
+
+string htfTimeframe =
+     in_useDynamicHtf ? f_getNextTf() : selectedHtf
+
+// ================================================================================
+// 🔴 END REGION: Higher-Timeframe Oscillator Selector
+// ================================================================================
+
+// ================================================================================
+// 🟢 REGION: Higher-Timeframe Oscillator Sampling
+// ================================================================================
+//
+// 📌 Purpose:
+//     Requests the active oscillator from the selected higher timeframe and
+//     stabilizes it for lower-timeframe use.
+//
+// 🧠 Behavior:
+//     • Pulls `osc` from the selected HTF using request.security()
+//     • Uses SCL_HTF.f_HTF_Float() to stabilize the returned series
+//     • Prevents the HTF reference line from visually desyncing while the
+//       higher-timeframe bar is still forming
+//
+// ================================================================================
+f_secHtfOsc(_tf) =>
+    request.security(
+         symbol=syminfo.tickerid,
+         timeframe=_tf,
+         expression=osc,
+         gaps=barmerge.gaps_off,
+         lookahead=barmerge.lookahead_off)
+
+float htfOscRaw =
+     f_secHtfOsc(htfTimeframe)
+
+float htfOscFixed =
+     SCL_HTF.f_HTF_Float(
+         _HTF=htfTimeframe,
+         _source=htfOscRaw,
+         _arrayHistory=2,
+         _HTF_offset=0,
+         _useLiveDataOnChartTF=true)
+
+// ================================================================================
+// 🔴 END REGION: Higher-Timeframe Oscillator Sampling
+// ================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Histogram Follow Line
+// ==============================================================================================
+//
+// 📌 Purpose:
+//     Draws a left and right follow line from the current oscillator value.
+//
+// 🧠 Behavior:
+//     • Right line extends forward from the current bar by X bars
+//     • Left line extends backward from the current bar by X bars
+//     • Both lines update every bar to stay locked to the live oscillator value
+//
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Inputs
+// ──────────────────────────────────────────────
+
+int in_histFollowLineWidth = 2 //input.int(
+    //  defval=1,
+    //  minval=1,
+    //  maxval=10,
+    //  title="Follow Line Width",
+    //  group=G_HIST_LINE,
+    //  tooltip=TT_FOLLOW_LINE_WIDTH)
+
+int in_histLineLengthRight = 2 //input.int(
+    //  defval=2,
+    //  minval=0,
+    //  maxval=100,
+    //  title="Follow Line Length Right",
+    //  group=G_HIST_LINE,
+    //  tooltip=TT_FOLLOW_LINE_RIGHT)
+
+int in_histLineLengthLeft = 1 //input.int(
+    //  defval=1,
+    //  minval=0,
+    //  maxval=500,
+    //  title="Follow Line Length Left",
+    //  group=G_HIST_LINE,
+    //  tooltip=TT_FOLLOW_LINE_LEFT)
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Style Mapping
+// ──────────────────────────────────────────────
+lineStyle_follow = line.style_solid
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Follow Line State
+// ──────────────────────────────────────────────
+color followLineColor = oscVisualColor
+
+var line followLineRight = na
+var line followLineLeft = na
+
+int x2_followRight = bar_index + in_histLineLengthRight
+int x2_followLeft = bar_index - in_histLineLengthLeft
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Follow Line Updater
+// ──────────────────────────────────────────────
+f_updateFollowLine(line _line, int _x1, float _y1, int _x2, float _y2, color _col, int _width, _style) =>
+    line _out = _line
+
+    if na(_out)
+        _out := line.new(
+             x1=_x1,
+             y1=_y1,
+             x2=_x2,
+             y2=_y2,
+             xloc=xloc.bar_index,
+             color=_col,
+             width=_width,
+             style=_style)
+    else
+        line.set_xy1(_out, _x1, _y1)
+        line.set_xy2(_out, _x2, _y2)
+        line.set_color(_out, _col)
+        line.set_width(_out, _width)
+        line.set_style(_out, _style)
+
+    _out
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: Follow Line Updates
+// ──────────────────────────────────────────────
+followLineRight := f_updateFollowLine(
+     followLineRight,
+     bar_index,
+     osc,
+     x2_followRight,
+     osc,
+     followLineColor,
+     in_histFollowLineWidth,
+     lineStyle_follow)
+
+followLineLeft := f_updateFollowLine(
+     followLineLeft,
+     bar_index,
+     osc,
+     x2_followLeft,
+     osc,
+     followLineColor,
+     in_histFollowLineWidth,
+     lineStyle_follow)
+
+// ==============================================================================================
+// 🔴 END REGION: Histogram Follow Line
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Engine Table State
+// ==============================================================================================
+
+bool usingRangeEngine =
+     in_engineMode == "HA Range Base"
+
+bool usingBlendEngine =
+     in_engineMode == "HA Blend"
+
+string rangeRowLabelTxt =
+     "Range Base " + (usingRangeEngine ? "✓" : "✕")
+
+string blendRowLabelTxt =
+     "HA Blend " + (usingBlendEngine ? "✓" : "✕")
+
+string finalSmoothTxt =
+     in_useFinalSmooth ?
+     " | Smooth " + str.tostring(in_finalSmoothLen) + " " + in_finalSmoothType : ""
+
+string rangeEngineInfoTxt =
+     str.tostring(in_rangeLen) + " " + in_rangeMaType +
+     finalSmoothTxt
+
+// ──────────────────────────────────────────────
+// 🟦 Subregion: HA Blend Pair-Set Table Text
+// ──────────────────────────────────────────────
+//
+// 📌 Purpose:
+//     Builds the HA Blend table text for the selected preset pair set.
+//
+// 🧠 Behavior:
+//     • Top value row shows the selected preset
+//     • Bottom value row shows the exact EMA pairs used by that preset
+//
+// 🧩 Why this matters in this script:
+//     The HA Blend section now reflects one clean preset-driven ladder rather
+//     than a long mixed list of manually enabled pairs.
+//
+string blendPairSetTxt =
+     "Pair Set > " + in_blendPairSet
+
+string blendPairsTxt =
+     in_blendPairSet == "Fast" ? "5/8 | 8/13 | 13/21 | 21/34" :
+     in_blendPairSet == "Balanced" ? "13/21 | 21/34 | 34/55 | 55/89" :
+     "34/55 | 55/89 | 89/144 | 144/233"
+
+float oscChange =
+     osc - osc[1]
+
+string oscValueTxt =
+     na(osc) ? "—" : str.tostring(osc, "#.##")
+
+string oscChangeTxt =
+     na(oscChange) ? "—" :
+     (oscChange > 0 ? "+" : "") + str.tostring(oscChange, "#.##")
+
+string oscInfoTxt =
+     oscValueTxt + " (" + oscChangeTxt + ")"
+
+color oscRowBg =
+     oscVisualColor
+
+color oscRowTxt =
+     f_tableContrastText(oscRowBg)
+
+color engineHdrBg = color.rgb(0, 0, 0)
+color engineHdrTxt = color.white
+
+color engineNeutralBg = color.rgb(0, 0, 0)
+color engineNeutralTxt = color.white
+
+color rangeRowBg =
+     usingRangeEngine ? rangeEngineVisualColor : engineNeutralBg
+
+color rangeRowTxt =
+     usingRangeEngine ? f_tableContrastText(rangeRowBg) : engineNeutralTxt
+
+color blendRowBg =
+     usingBlendEngine ? blendEngineVisualColor : engineNeutralBg
+
+color blendRowTxt =
+     usingBlendEngine ? f_tableContrastText(blendRowBg) : engineNeutralTxt
+
+string chartTF_Pretty =
+     TF.f_prettifyTF(timeframe.period)
+
+string engineHdrLabelTxt =
+     syminfo.ticker + " | " + chartTF_Pretty
+
+var table engineInfoTable =
+     table.new(
+         f_tablePos(in_engineTablePos),
+         2,
+         5,
+         bgcolor=color.new(color.black, 0),
+         frame_color=color.new(color.white, 70),
+         border_color=color.new(color.white, 80),
+         border_width=1)
+
+// ==============================================================================================
+// 🔴 END REGION: Engine Table State
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Engine Table Render
+// ==============================================================================================
+
+if barstate.islast
+    _ts = f_tableTextSize(in_engineTableTextSize)
+
+    if in_showEngineTable
+        table.clear(engineInfoTable, 0, 0, 1, 4)
+        table.merge_cells(engineInfoTable, 0, 0, 1, 0)
+        table.merge_cells(engineInfoTable, 0, 3, 0, 4)
+
+        table.cell(
+             engineInfoTable,
+             0,
+             0,
+             engineHdrLabelTxt,
+             text_color=engineHdrTxt,
+             bgcolor=engineHdrBg,
+             text_size=_ts)
+
+        table.cell(
+             engineInfoTable,
+             0,
+             1,
+             "OSC (Hist)",
+             text_color=oscRowTxt,
+             bgcolor=oscRowBg,
+             text_size=_ts)
+
+        table.cell(
+             engineInfoTable,
+             1,
+             1,
+             oscInfoTxt,
+             text_color=oscRowTxt,
+             bgcolor=oscRowBg,
+             text_size=_ts)
+
+        table.cell(
+             engineInfoTable,
+             0,
+             2,
+             rangeRowLabelTxt,
+             text_color=rangeRowTxt,
+             bgcolor=rangeRowBg,
+             text_size=_ts)
+
+        table.cell(
+             engineInfoTable,
+             1,
+             2,
+             rangeEngineInfoTxt,
+             text_color=rangeRowTxt,
+             bgcolor=rangeRowBg,
+             text_size=_ts)
+
+        table.cell(
+             engineInfoTable,
+             0,
+             3,
+             blendRowLabelTxt,
+             text_color=blendRowTxt,
+             bgcolor=blendRowBg,
+             text_size=_ts)
+
+        table.cell(
+             engineInfoTable,
+             1,
+             3,
+             blendPairSetTxt,
+             text_color=blendRowTxt,
+             bgcolor=blendRowBg,
+             text_size=_ts)
+
+        table.cell(
+             engineInfoTable,
+             1,
+             4,
+             blendPairsTxt,
+             text_color=blendRowTxt,
+             bgcolor=blendRowBg,
+             text_size=_ts)
+    else
+        table.clear(engineInfoTable, 0, 0, 1, 4)
+
+// ==============================================================================================
+// 🔴 END REGION: Engine Table Render
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Price Overlay Candle Colors
+// ==============================================================================================
+//
+// 📌 Purpose:
+//     Derives the colors used by the optional chart-overlay candles.
+//
+// ==============================================================================================
+
+color priceOverlayBaseCol =
+     not in_showPriceCandles ? na :
+     in_useOscColorForPriceCandles ? oscVisualColor : na
+
+color priceOverlayBodyCol =
+     na(priceOverlayBaseCol) ? na : color.new(priceOverlayBaseCol, in_priceCandleBodyTransp)
+
+color priceOverlayEdgeCol =
+     priceOverlayBaseCol
+// ==============================================================================================
+// 🔴 END REGION: Price Overlay Candle Colors
+// ==============================================================================================
+
+// ==============================================================================================
+// 🟢 REGION: Plots
+// ==============================================================================================
+
+// ──────────────────────────────────────────────
+// Higher-Timeframe Oscillator
+// Plots the stabilized higher-timeframe version of the active oscillator.
+// ──────────────────────────────────────────────
+plot(
+     in_htfOscMode == "Last N Bars" ? htfOscFixed : na,
+     title="Higher-Timeframe Oscillator (Last N Bars)",
+     color=#0066ff,
+     linewidth=1,
+     show_last=in_htfOscShowLast)
+
+// ──────────────────────────────────────────────
+// Price Overlay Candles
+// Draws oscillator-colored candles directly on the main chart using force_overlay.
+// ──────────────────────────────────────────────
+plotcandle(
+     in_showPriceCandles ? open : na,
+     in_showPriceCandles ? high : na,
+     in_showPriceCandles ? low : na,
+     in_showPriceCandles ? close : na,
+     title="Price Overlay Candles (Last N Bars)",
+     color=priceOverlayBodyCol,
+     wickcolor=priceOverlayEdgeCol,
+     bordercolor=priceOverlayEdgeCol,
+     show_last=in_priceCandleShowLast,
+     force_overlay=true)
+
+// ──────────────────────────────────────────────
+// Main Oscillator Histogram / Line
+// Plots the active HA oscillator itself using the script's main color engine.
+// ──────────────────────────────────────────────
+plot(
+     in_showHistogram ? osc : na,
+     title="Unified HA Oscillator Histogram",
+     style=plot.style_line,
+     color=oscVisualColor,
+     linewidth=2,
+     show_last=in_plotLast)
+
+// ──────────────────────────────────────────────
+// Oscillator Candles
+// Draws synthetic candles from oscillator OHLC instead of price OHLC.
+// ──────────────────────────────────────────────
+plotcandle(
+     open=in_showOscCandles ? oscOpen : na,
+     high=in_showOscCandles ? oscHigh : na,
+     low=in_showOscCandles ? oscLow : na,
+     close=in_showOscCandles ? oscClose : na,
+     title="Oscillator Candles",
+     color=oscBodyColor,
+     wickcolor=oscEdgeColor,
+     bordercolor=oscEdgeColor,
+     show_last=in_plotLastCandles)
+
+// ──────────────────────────────────────────────
+// OSC Pressure Envelope
+// Continuous envelope around osc with state-based fill.
+// ──────────────────────────────────────────────
+plotOscPressureUpper = plot(
+     in_showOscPressureEnvelope ? oscPressureUpper : na,
+     title="OSC Pressure Envelope Upper",
+     color=color.new(color.white, 100),
+     linewidth=1,
+     show_last=in_plotLastCandles)
+
+plotOscPressureLower = plot(
+     in_showOscPressureEnvelope ? oscPressureLower : na,
+     title="OSC Pressure Envelope Lower",
+     color=color.new(color.white, 100),
+     linewidth=1,
+     show_last=in_plotLastCandles)
+
+fill(
+     plotOscPressureUpper,
+     plotOscPressureLower,
+     color=oscPressureFillColor,
+     title="OSC Pressure Background")
+
+// ──────────────────────────────────────────────
+// Adaptive Fast Line
+// Primary fast crossover line built from the adaptive crossover engine.
+// ──────────────────────────────────────────────
+plotFast = plot(
+     in_showCrossLines ? fastLine : na,
+     title="Fast Line",
+     color=crossLineCol,
+     linewidth=1,
+     show_last=in_plotLast)
+
+// ──────────────────────────────────────────────
+// Adaptive Slow Line
+// Primary slow crossover line built from the adaptive crossover engine.
+// ──────────────────────────────────────────────
+plotSlow = plot(
+     in_showCrossLines ? slowLine : na,
+     title="Slow Line",
+     color=crossLineCol,
+     linewidth=1,
+     show_last=in_plotLast)
+
+// ──────────────────────────────────────────────
+// Adaptive Cross Fill
+// Fills the space between the adaptive fast and slow crossover lines.
+// ──────────────────────────────────────────────
+fill(
+     plotFast,
+     plotSlow,
+     color=crossFillCol,
+     title="Cross Fill")
+
+// ──────────────────────────────────────────────
+// SMA Engine Fast Line
+// Fast line for the standalone SMA 20 / 50 crossover engine.
+// ──────────────────────────────────────────────
+plotFast_sma = plot(
+     in_showSignals_sma ? fastLine_sma : na,
+     title="Fast Line (SMA Engine)",
+     color=crossLineCol_sma,
+     linewidth=1,
+     show_last=in_plotLast)
+
+// ──────────────────────────────────────────────
+// SMA Engine Slow Line
+// Slow line for the standalone SMA 20 / 50 crossover engine.
+// ──────────────────────────────────────────────
+plotSlow_sma = plot(
+     in_showSignals_sma ? slowLine_sma : na,
+     title="Slow Line (SMA Engine)",
+     color=crossLineCol_sma,
+     linewidth=1,
+     show_last=in_plotLast)
+
+// ──────────────────────────────────────────────
+// SMA Engine Fill
+// Fills the space between the standalone SMA-engine fast and slow lines.
+// ──────────────────────────────────────────────
+fill(
+     plotFast_sma,
+     plotSlow_sma,
+     color=crossFillCol_sma,
+     title="Signal Fill (SMA Engine)")
+
+// ──────────────────────────────────────────────
+// Oscillator VWA
+// Plots the adaptive volume-weighted average of the active oscillator.
+// ──────────────────────────────────────────────
+plot(
+     in_showOscVwa and in_oscVwaDisplayMode == "Last 'N' Bars" ? oscVwa : na,
+     title="Oscillator VWA (Last N Bars)",
+     color=oscVwaColor,
+     linewidth=1,
+     style=plot.style_circles,
+     show_last=in_oscVwaShowLast)
+
+// ──────────────────────────────────────────────
+// Trend Overlay Plot Color
+// Colors the plotted Trend Pivot Overlay by whether it sits above or below zero.
+// ──────────────────────────────────────────────
+color overlayPlotColor =
+     na(overlayLine) ? na :
+     overlayLine > 0 ? in_overlayBearColor :
+     overlayLine < 0 ? in_overlayBullColor :
+     color.gray
+
+// ──────────────────────────────────────────────
+// Trend Pivot Overlay
+// Plots the active pivot-based baseline derived from confirmed oscillator pivots.
+// ──────────────────────────────────────────────
+plot(
+     in_showTrendOverlay and overlayReady ? overlayLine : na,
+     title="Trend Pivot Overlay",
+     color=overlayPlotColor,
+     linewidth=1,
+     style=plot.style_stepline,
+     show_last=in_plotLast)
+
+// ──────────────────────────────────────────────
+// Zero Line
+// Fixed neutral baseline for the oscillator.
+// ──────────────────────────────────────────────
+plot(
+     in_showZeroLine ? zeroLine : na,
+     title="Zero Line",
+     color=in_zeroLineColor,
+     linewidth=1,
+     style=plot.style_line,
+     show_last=in_guideShowLast)
+
+// ──────────────────────────────────────────────
+// Upper +50% Guide
+// Adaptive upper guide set to 50% of the recent positive oscillator extreme.
+// ──────────────────────────────────────────────
+plot(
+     in_showHalfLines ? upperGuide : na,
+     title="+50% Guide",
+     color=in_upperGuideColor,
+     linewidth=1,
+     style=plot.style_line,
+     show_last=in_guideShowLast)
+
+// ──────────────────────────────────────────────
+// Lower -50% Guide
+// Adaptive lower guide set to 50% of the recent negative oscillator extreme.
+// ──────────────────────────────────────────────
+plot(
+     in_showHalfLines ? lowerGuide : na,
+     title="-50% Guide",
+     color=in_lowerGuideColor,
+     linewidth=1,
+     style=plot.style_line,
+     show_last=in_guideShowLast)
+
+// ==============================================================================================
+// 🔴 END REGION: Plots
+// ==============================================================================================
+
+
+// // ==============================================================================================
+// // 🟢 REGION: Price Bar Coloring
+// // ==============================================================================================
+
+// barcolor(
+//      in_colorPriceBars ? oscColor : na,
+//      title="Oscillator Price Bar Color")
+
+// // ==============================================================================================
+// // 🔴 END REGION: Price Bar Coloring
+// // ==============================================================================================
+
+
+// plotchar(
+//      osc >= in_oscPressureUpperTrigger,
+//      title="Upper Trigger Active",
+//      char="▲",
+//      location=location.top,
+//      color=color.orange)
+
+// plotchar(
+//      osc <= in_oscPressureLowerTrigger,
+//      title="Lower Trigger Active",
+//      char="▼",
+//      location=location.bottom,
+//      color=color.fuchsia)
