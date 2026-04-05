@@ -1,0 +1,41 @@
+//@version=6
+indicator("可视范围-价格高低点", overlay=true)
+
+var line maxLine = na
+var line minLine = na
+var label maxLabel = na
+var label minLabel = na
+
+// 只有在图表最后一根K线时才执行计算，利用 v6 的引擎优化
+if barstate.islast
+    float visMax = na
+    float visMin = na
+    int maxTime = na
+    int minTime = na
+
+    // 往前遍历寻找屏幕范围内的极值
+    for i = 0 to 4999
+        if time[i] < chart.left_visible_bar_time
+            break // 超出屏幕左侧，停止寻找
+            
+        if time[i] >= chart.left_visible_bar_time and time[i] <= chart.right_visible_bar_time
+            if na(visMax) or high[i] > visMax
+                visMax := high[i]
+                maxTime := time[i]
+            if na(visMin) or low[i] < visMin
+                visMin := low[i]
+                minTime := time[i]
+
+    // 画最高点横线和标签
+    if not na(visMax)
+        line.delete(maxLine)
+        label.delete(maxLabel)
+        maxLine := line.new(x1=chart.left_visible_bar_time, y1=visMax, x2=chart.right_visible_bar_time, y2=visMax, xloc=xloc.bar_time, color=color.new(color.red, 30), width=1, style=line.style_dashed)
+        maxLabel := label.new(x=maxTime, y=visMax, xloc=xloc.bar_time, text="最高: " + str.tostring(visMax), color=color.red, textcolor=color.white, style=label.style_label_down)
+
+    // 画最低点横线和标签
+    if not na(visMin)
+        line.delete(minLine)
+        label.delete(minLabel)
+        minLine := line.new(x1=chart.left_visible_bar_time, y1=visMin, x2=chart.right_visible_bar_time, y2=visMin, xloc=xloc.bar_time, color=color.new(color.green, 30), width=1, style=line.style_dashed)
+        minLabel := label.new(x=minTime, y=visMin, xloc=xloc.bar_time, text="最低: " + str.tostring(visMin), color=color.green, textcolor=color.white, style=label.style_label_up)
