@@ -1,0 +1,1382 @@
+//@version=5
+
+indicator('Signal Engine Lite [Aslan]', overlay=true, max_bars_back=5000, precision=4, max_labels_count=500, max_lines_count=500, max_boxes_count=500, format=format.inherit)
+// ═══════════════════════════════════════════════════════════
+//  GROUP 1 — CORE SIGNAL MODE
+// ═══════════════════════════════════════════════════════════
+groupMode = "① Signal Mode"
+signalMode           = input.string("Reversal", "Signal Type", options=["Reversal", "Breakout"], group=groupMode, tooltip="Reversal: fires when a trend exhausts and the SuperTrend flips direction, catching turning points. Breakout: fires when price pushes into a new extreme with the current trend, riding momentum. Pick one and tune for it — running both dilutes signal quality.")
+requireNewExtreme    = input.bool(true,  "Require Fresh Pivot", group=groupMode, tooltip="When enabled, a signal only fires if price made a genuine new high or low during the trend before reversing. Disabling this allows signals on any SuperTrend flip, even without a fresh extreme — you get more signals but many will be lower quality noise.")
+minBarsBetweenSignals= input.int(10,     "Signal Spacing", minval=1, maxval=500, group=groupMode, tooltip="Minimum number of bars required between any two signals. Prevents clustering. Lower values produce more signals but risk rapid-fire entries in choppy zones. Higher values enforce patience. Must be tuned per timeframe — a 1-minute chart may need 5, a daily chart may need 20+.")
+
+enableReversal = signalMode == "Reversal"
+enableBreakout = signalMode == "Breakout"
+
+// ═══════════════════════════════════════════════════════════
+//  GROUP 2 — VOLATILITY ENVELOPE
+// ═══════════════════════════════════════════════════════════
+groupEnv = "② Volatility Envelope"
+sensitivity = input.int(30,       "Lookback Window", minval=1, maxval=600, group=groupEnv, tooltip="How many bars the indicator scans when detecting new highs and lows. This is the sensitivity parameter — lower values react to minor swings and produce more signals, higher values only react to larger structural moves and produce fewer, more meaningful signals. One of the most important settings to tune.")
+atrPeriod   = input.int(24,       "Smoothing Period", minval=5, maxval=600, group=groupEnv, tooltip="The ATR period used for the SuperTrend band calculation. Lower values make the bands react faster to volatility changes (more whipsaw, quicker flips). Higher values produce smoother bands that are slower to flip. Critical setting — tune this together with Band Width.")
+multiplier  = input.float(1.4,    "Band Width", minval=0.5, maxval=5.0, step=0.05, group=groupEnv, tooltip="ATR multiplier controlling how wide the SuperTrend bands are. This is THE single most impactful setting in the entire indicator. Lower values create tighter bands that flip more often, generating more signals. Higher values create wider bands that only flip on large moves, producing fewer but higher-conviction signals.")
+sourceType  = input.string("hlcc4","Price Basis", options=["open","high","low","close","hl2","hlc3","ohlc4","hlcc4"], group=groupEnv, tooltip="Which price source feeds the SuperTrend calculation. hlcc4 (close-weighted average) is the smoothest and most stable. 'close' is the most reactive. hl2 and hlc3 are middle ground. Rarely needs changing from the default.")
+useATR      = input.bool(true,     "True Range Mode", group=groupEnv, tooltip="When enabled, uses RMA-smoothed ATR (the standard method). When disabled, uses EMA-smoothed true range instead, which reacts faster to sudden volatility spikes but can be noisier. Leave on unless you specifically want faster volatility response.")
+
+// ═══════════════════════════════════════════════════════════
+//  GROUP 3 — MOMENTUM FILTER
+// ═══════════════════════════════════════════════════════════
+groupMom = "③ Momentum Filter"
+enableRSI      = input.bool(true, "Active", group=groupMom, tooltip="Toggles the RSI confirmation filter. When active, buy signals require RSI to have recently been oversold, and sell signals require RSI to have recently been overbought. Disabling removes this filter entirely — more signals fire, but without momentum confirmation they may be lower quality.")
+rsiLen         = input.int(14,    "Length", minval=2, maxval=50, group=groupMom, tooltip="RSI calculation period. Lower values make RSI more volatile and more likely to cross the overbought/oversold thresholds, which means the filter triggers more easily. Higher values produce a smoother RSI that is harder to trigger, making the filter stricter.")
+rsiLookbackTop = input.int(50,    "Hot Zone Memory", minval=1, maxval=400, group=groupMom, tooltip="How many bars back the indicator looks to check if RSI was above the overbought level (for sell signal confirmation). Higher values are more lenient — RSI just needed to be hot sometime recently. Lower values require RSI to have been hot very recently, making the timing requirement stricter.")
+rsiLookbackBot = input.int(50,    "Cold Zone Memory", minval=1, maxval=400, group=groupMom, tooltip="How many bars back the indicator looks to check if RSI was below the oversold level (for buy signal confirmation). Higher values are more lenient. Lower values require RSI to have been cold very recently, making buy signal confirmation stricter.")
+
+// ═══════════════════════════════════════════════════════════
+//  GROUP 4 — FLOW ANALYSIS
+// ═══════════════════════════════════════════════════════════
+groupFlow = "④ Flow Analysis"
+volLookback    = input.int(3,      "Sample Depth", minval=1, maxval=300, group=groupFlow, tooltip="How many bars of volume to average when calculating the 'normal' volume baseline. Lower values compare current volume to a very short recent average (more noisy, easier to spike). Higher values compare to a longer average (more stable baseline, harder to register as a surge).")
+volMultiplier  = input.float(1.2,  "Surge Threshold", minval=0.1, maxval=5.0, step=0.1, group=groupFlow, tooltip="Current bar's volume must exceed this multiple of the average volume to qualify as a surge. At 1.2, volume needs to be 20% above average. Higher values require a bigger volume spike. Lower values mean most bars will qualify as surges, weakening the filter.")
+requireVolSpike= input.bool(false, "Require Surge", group=groupFlow, tooltip="When enabled, signals ONLY fire when volume is surging above the threshold. This is a powerful quality filter — it dramatically reduces signal count but the surviving signals tend to be much stronger because they have volume confirmation behind them. Consider enabling this for cleaner signals.")
+
+// ═══════════════════════════════════════════════════════════
+//  GROUP 5 — SIGNAL QUALITY
+// ═══════════════════════════════════════════════════════════
+groupQual = "⑤ Signal Quality"
+enableMajorLevelsOnly = input.bool(false, "Key Levels Only", group=groupQual, tooltip="When enabled, only allows signals at major structural turning points where the high-to-low price range exceeds a large ATR multiple. Drastically reduces signal count to only the biggest, most significant reversals. Good for swing traders who want fewer, higher-conviction entries.")
+majorLevelThreshold   = input.float(4.5,  "Key Level Depth (xATR)", minval=1.0, maxval=20.0, step=0.1, group=groupQual, tooltip="How many ATRs the high-to-low range must span to qualify as a 'key level' turning point. Only matters when Key Levels Only is enabled. Higher values require even larger price structures, producing fewer and more extreme signals. Lower values let smaller structures qualify.")
+
+// ═══════════════════════════════════════════════════════════
+//  GROUP 6 — MASTER DIAL
+// ═══════════════════════════════════════════════════════════
+groupDial = "⑥ Master Dial"
+dialK             = input.int(10,   "Reactivity (1–20)", minval=1, maxval=20, group=groupDial, tooltip="The single most important adaptive control. This meta-knob simultaneously sets micro-batch size, stride, confidence weighting, per-parameter caps, deadband sensitivity, and EMA alpha. Value of 1 = very conservative (large batches, slow adaptation, tight change caps). Value of 20 = very aggressive (small batches, fast adaptation, wide caps). If you only change one adaptive setting, change this.")
+enableBinLearning = input.bool(true,"Micro-Batch Processing", group=groupDial, tooltip="Enables the mini-batch learning system that groups recent test matrix results into small batches and fires parameter adjustments based on batch-level statistics. When off, only the slower rolling-window global optimizer adjusts parameters. When on, adds a faster, more responsive adaptation layer on top of the global optimizer.")
+enableTickPressure= input.bool(true,"Live Pressure Sensor", group=groupDial, tooltip="On realtime bars, tracks cumulative up-tick vs down-tick volume flow to gauge intrabar buying or selling pressure. This pressure bias is used to scale the optimizer's learning step size — strong directional pressure makes the optimizer step harder. Only has effect on live charts, not when scrolling through historical data.")
+
+// ═══════════════════════════════════════════════════════════
+//  GROUP 7 — AUTO-TUNE ENGINE
+// ═══════════════════════════════════════════════════════════
+groupAuto = "⑦ Auto-Tune Engine"
+enableAdaptive = input.bool(true, "Enable Auto-Tune", group=groupAuto, tooltip="Master switch for the entire adaptive self-tuning system. When off, the indicator uses your static input values forever with no self-adjustment — it becomes a traditional fixed-parameter indicator. When on, all downstream adaptation (test matrix, optimizer, regime grid, decay traces) is active.")
+usefaintCycle = input.bool(true, "Use Background Test Matrix (5×5)", group=groupAuto, tooltip="Runs a continuous background simulation of 5 long and 5 short positions opened every confirmed bar and held for 5 bars each. The results feed the optimizer. Must be on for the adaptive engine to have any data to learn from. Turning this off disables the entire learning pipeline.")
+lockATRBands   = input.bool(true, "Lock Envelope to Base (plot safety)", group=groupAuto, tooltip="Forces the plotted SuperTrend bands to use your original base inputs, even if the adaptive system has drifted the internal parameters. On = visual consistency on the chart. Off = plotted bands reflect the adapted values, which can look jumpy. Note: the signal engine ALWAYS uses the adapted values regardless of this setting — this only affects the visual plot.")
+
+// ═══════════════════════════════════════════════════════════
+//  GROUP 8 — OPTIMIZER
+// ═══════════════════════════════════════════════════════════
+groupOpt = "⑧ Optimizer"
+learnEnabled    = input.bool(true,   "Enable", group=groupOpt, tooltip="Turns the learning and optimization proposals on or off. When off, the test matrix still runs and scores trades, but results are discarded and no parameter updates are applied. Useful for observing test matrix performance without allowing it to change anything.")
+learnRate       = input.float(0.25,  "Step Size", minval=0.01, maxval=0.5, step=0.01, group=groupOpt, tooltip="Base learning rate for parameter proposals. Higher values produce larger proposed changes per evaluation cycle, making adaptation faster but potentially overshooting. Lower values produce smaller, more conservative adjustments. This is further scaled by sample confidence and pressure bias.")
+rollN           = input.int(30,      "History Depth (per side)", minval=5, maxval=1000, group=groupOpt, tooltip="Rolling window of recent trades per side (long and short separately) used to compute win rate, average return, Sortino ratio, and profit factor. Higher values give the optimizer a longer memory, making it slower to react to regime changes but more stable. Lower values make it faster to react but noisier. Important to tune.")
+winHi           = input.float(0.62,  "Win Ceiling", minval=0.50, maxval=1.00, step=0.01, group=groupOpt, tooltip="If the rolling win rate exceeds this threshold, the optimizer considers the current strategy 'strong' and proposes tightening parameters (smaller bands, tighter stops). Higher values make it harder to trigger this optimization path, keeping the system more conservative about tightening.")
+winLo           = input.float(0.38,  "Win Floor", minval=0.00, maxval=0.50, step=0.01, group=groupOpt, tooltip="If the rolling win rate drops below this threshold, the optimizer considers the strategy 'weak' and proposes loosening parameters (wider bands, wider stops). Lower values make it harder to trigger the loosening path, keeping the system more tolerant of drawdowns before reacting.")
+useATRnorm      = input.bool(true,   "Normalize Returns by ATR", group=groupOpt, tooltip="When enabled, the optimizer judges trade performance by ATR-normalized returns instead of raw USD amounts. This makes learning consistent across different volatility levels and price scales. Generally should stay on unless you have a specific reason to evaluate raw dollar performance.")
+smoothAlpha     = input.float(0.35,  "Momentum Smoothing", minval=0.05, maxval=1.0, step=0.05, group=groupOpt, tooltip="EMA factor applied when blending new proposed parameter values into the current adaptive parameters. Higher values let new proposals take effect faster (less inertia). Lower values add more momentum/inertia, smoothing out parameter changes over time. The Master Dial also influences this.")
+paramUpdateEvery= input.int(3,       "Update Cooldown (bars)", minval=1, maxval=100, group=groupOpt, tooltip="Minimum number of bars that must pass between successive parameter updates. Higher values force more stability between updates, preventing rapid oscillation. Lower values allow parameters to change on nearly every bar. A value of 3 means the optimizer can only apply changes every 3 bars at most.")
+deadbandMult    = input.float(0.01,  "Deadband Width", minval=0, maxval=0.2, step=0.005, group=groupOpt, tooltip="A proposed change to the ATR multiplier must exceed this threshold before the optimizer actually applies it. Prevents micro-jitter from tiny, meaningless adjustments. Higher values filter out more small changes. Zero disables the deadband entirely.")
+deadbandLen     = input.float(0.25,  "Deadband Period", minval=0, maxval=5, step=0.05, group=groupOpt, tooltip="Same concept as Deadband Width but applied to the ATR period parameter. A proposed change to the ATR period must exceed this threshold before being applied. Higher values mean the ATR period changes less frequently.")
+quantStepMult   = input.float(0.05,  "Quant Step: Width", minval=0, maxval=0.25, step=0.01, group=groupOpt, tooltip="Proposed ATR multiplier values are rounded to this step size before being applied. Prevents micro-jitter by quantizing changes to discrete levels. For example, at 0.05 the multiplier can only be 1.40, 1.45, 1.50 etc. Set to 0 for continuous (unquantized) values.")
+quantStepStop   = input.float(0.02,  "Quant Step: Guard", minval=0, maxval=0.25, step=0.01, group=groupOpt, tooltip="Stop-loss multiplier values are rounded to this step size. Same anti-jitter purpose as Quant Step Width but applied to the guard (stop) parameter.")
+quantStepTP     = input.float(0.02,  "Quant Step: Target", minval=0, maxval=0.25, step=0.01, group=groupOpt, tooltip="Take-profit multiplier values are rounded to this step size. Prevents the target distance from micro-oscillating.")
+quantStepBrk    = input.float(0.01,  "Quant Step: Edge", minval=0, maxval=0.2, step=0.005, group=groupOpt, tooltip="Breakout buffer values are rounded to this step size. Keeps the edge buffer from jittering on small optimizer changes.")
+revertEvery     = input.int(200,     "Anchor Revert Interval", minval=10, maxval=5000, group=groupOpt, tooltip="Every N bars, the adaptive parameters drift slightly back toward your original base input values. This is a safety mechanism that prevents unbounded parameter drift over long runs. Lower values revert more often, keeping parameters closer to base. Higher values give the adaptive engine more freedom to drift.")
+revertStep      = input.float(0.01,  "Anchor Revert Strength", minval=0.001, maxval=0.1, step=0.001, group=groupOpt, tooltip="How far toward base values each reversion step pulls, as a fraction. At 0.01, each revert moves parameters 1% of the way back to their base values. Higher values pull harder toward base. Lower values barely nudge.")
+pnlCapUSD       = input.float(750.0, "P&L Cap per Trade (USD)", minval=0, step=10, group=groupOpt, tooltip="Caps the USD value of any single trade result used for learning. Prevents one outlier windfall or catastrophic loss from distorting the optimizer's statistical view. Trades exceeding this cap in either direction are clipped to this value before being added to the rolling window.")
+
+// ═══════════════════════════════════════════════════════════
+//  GROUP 9 — RISK GUARD
+// ═══════════════════════════════════════════════════════════
+groupRisk = "⑨ Risk Guard"
+maxTradesPerSession  = input.int(20,       "Max Entries / Session", minval=1, maxval=100, group=groupRisk, tooltip="Maximum number of trades allowed per calendar day session. Once this count is reached, no new entries are allowed until the next session reset. Lower values enforce stricter session-level discipline.")
+maxSessionLoss       = input.float(-1000.0,"Session Loss Limit (USD)", maxval=0, step=100, group=groupRisk, tooltip="If the cumulative session P&L drops below this USD amount, all trading pauses until the next session reset. More negative values allow larger drawdowns before pausing. Less negative values create a tighter loss limit.")
+baseCooldownBars     = input.int(5,        "Base Pause After Loss", minval=0, maxval=50, group=groupRisk, tooltip="Number of bars to wait after a losing trade before allowing another entry. Enforces a cooldown to prevent revenge trading. Higher values create longer pauses. Zero disables the cooldown entirely.")
+maxConsecutiveLosses = input.int(3,        "Streak Limit", minval=1, maxval=10, group=groupRisk, tooltip="If consecutive losses reach this count, trading pauses entirely until the session resets. Lower values stop trading faster during losing streaks, protecting capital but potentially missing a recovery.")
+enableDynamicCooldown= input.bool(true,    "Scale Pause by Loss Size", group=groupRisk, tooltip="When enabled, larger losses cause proportionally longer cooldown periods. A small loss gets the base pause, but a large loss could trigger a much longer pause. When disabled, the cooldown is always exactly the Base Pause After Loss value regardless of how large the loss was.")
+applyRiskTofaint    = input.bool(false,   "Enforce on Test Matrix", group=groupRisk, tooltip="When enabled, applies the risk guard rules (session limits, cooldowns, streak limits) to the background test matrix as well, not just signal generation. This can slow down learning data since the test matrix will also pause after losses. Usually best left off so the test matrix always has fresh data to learn from.")
+
+// ═══════════════════════════════════════════════════════════
+//  GROUP 10 — CONTEXT MEMORY
+// ═══════════════════════════════════════════════════════════
+groupCtx = "⑩ Context Memory"
+useCognitiveMap  = input.bool(true,  "Enable Regime Grid", group=groupCtx, tooltip="Activates the 2D grid that maps the current market state by regime (trend strength) and volatility, then remembers what parameter adjustments worked in each cell. When the market returns to a familiar condition, the grid recommends proven parameter shifts. Disabling this removes all market-context memory — the optimizer relies only on global rolling statistics.")
+mapGridX         = input.int(8,      "Regime Bins", minval=4, maxval=16, group=groupCtx, tooltip="Number of buckets along the trend-strength axis (computed from Hurst exponent, entropy, and ADX). More bins create finer granularity but each cell takes longer to accumulate enough trades for confidence. Fewer bins are coarser but build confidence faster.")
+mapGridY         = input.int(8,      "Volatility Bins", minval=4, maxval=16, group=groupCtx, tooltip="Number of buckets along the volatility axis (ATR ratio). Same tradeoff as Regime Bins — more bins give finer resolution at the cost of slower confidence buildup per cell.")
+mapSigma         = input.float(0.8,  "Neighbor Blend Radius", minval=0.2, maxval=2.0, step=0.05, group=groupCtx, tooltip="When reading a grid cell's recommendation, nearby cells are blended in using a Gaussian kernel with this sigma (in bin units). Higher values create more smoothing between cells, which helps when cells have sparse data. Lower values make each cell act more independently, which is better when you have lots of data per cell.")
+mapHalfLife      = input.int(50,     "Decay Half-Life (trades)", minval=10, maxval=200, group=groupCtx, tooltip="EWMA half-life for grid cell statistics. After this many trades in a cell, older data carries half weight. Lower values cause faster forgetting, so the grid adapts quickly to changing conditions within a regime. Higher values retain more historical memory, providing more stability.")
+mapConfScale     = input.int(20,     "Confidence Ramp (trades)", minval=5, maxval=200, group=groupCtx, tooltip="Controls how quickly a cell gains confidence. After this many trades, a cell reaches approximately 63% confidence. Lower values let cells become influential faster with less evidence. Higher values require more trade data before trusting a cell's recommendations.")
+mapWeightMax     = input.float(0.65, "Max Grid Influence", minval=0.1, maxval=0.9, step=0.05, group=groupCtx, tooltip="Maximum weight the regime grid's recommendation can have when blended with the global optimizer's proposals. At 0.65, the grid can contribute up to 65% of the final parameter adjustment. Higher values let the grid dominate. Lower values keep the global optimizer in control. Important on markets that cycle between trending and ranging.")
+volMaxRatio      = input.float(2.5,  "Vol Ratio Ceiling", minval=1.0, maxval=5.0, step=0.1, group=groupCtx, tooltip="Saturates the volatility axis at this ATR/Average-ATR ratio. Any ratio above this value is clamped to the highest volatility bin. Higher values allow more extreme volatility states to spread across more bins. Lower values compress extreme volatility into fewer bins.")
+
+// ═══════════════════════════════════════════════════════════
+//  GROUP 11 — decay TRACES
+// ═══════════════════════════════════════════════════════════
+groupdecay = "⑪ decay Traces"
+useSTM              = input.bool(true,  "Enable Trace Buffer", group=groupdecay, tooltip="Keeps a short-term memory buffer of recent trade results that fade over time. Provides rapid feedback — if many recent trades experienced large adverse moves, the system automatically tightens stops. Periodically, the strongest traces are consolidated into the regime grid for long-term memory. Disabling removes short-term trade memory entirely.")
+stmSize             = input.int(30,     "Buffer Depth", minval=10, maxval=200, group=groupdecay, tooltip="Maximum number of decay traces held in the buffer at any time. Higher values retain more short-term history. Lower values keep only the most recent traces, making the feedback loop faster but with less context.")
+stmDecay            = input.float(0.02, "Fade Rate (per bar)", minval=0.0, maxval=0.2, step=0.005, group=groupdecay, tooltip="Each bar, every trace's energy is reduced by this fraction. At 0.02, a trace loses 2% of its remaining energy per bar. Higher values make traces fade quickly so only very recent outcomes matter. Lower values let traces persist longer, giving the system more historical context in its short-term memory.")
+stmConsolidateEvery = input.int(200,    "Merge Interval (bars)", minval=20, maxval=2000, group=groupdecay, tooltip="Every N bars, the strongest positive and negative traces in the buffer are consolidated (merged) into the regime grid for long-term storage. Lower values consolidate more frequently, transferring short-term lessons into long-term memory faster. Higher values let traces remain in the short-term buffer longer before being archived.")
+stmMAE_tailThr      = input.float(0.8,  "Adverse Move Threshold", minval=0.0, maxval=3.0, step=0.05, group=groupdecay, tooltip="If a trade's maximum adverse excursion (worst drawdown, measured in ATR units) exceeds this value, it is flagged as a 'tail' event. Lower values flag more trades as having problematic drawdowns. Higher values only flag extreme adverse moves. When many traces are flagged, the system tightens stops.")
+stmTailTightenCap   = input.float(0.02, "Guard Tighten Cap", minval=0.0, maxval=0.10, step=0.005, group=groupdecay, tooltip="Maximum amount the system will tighten the stop-loss multiplier based on the frequency of tail events in the decay buffer. Higher values allow more aggressive stop tightening when adverse moves are common. Lower values limit how much the system can tighten stops from this feedback channel.")
+
+// ═══════════════════════════════════════════════════════════
+//  GROUP 12 — STATE SNAPSHOT
+// ═══════════════════════════════════════════════════════════
+groupSnap = "⑫ State Snapshot"
+memoryCheckpoint     = input.string("", "Restore String", group=groupSnap, tooltip="Paste a previously exported snapshot string here to restore the indicator's learned state (adaptive parameters and regime grid cells). This lets you carry learned parameters across chart reloads, timeframe switches, or even to different symbols.")
+emitCheckpointNow    = input.bool(false,"Export Now (toggle)", group=groupSnap, tooltip="Toggle this on to emit the current learned state as an alert string. This is a one-shot trigger — it fires once on the next confirmed bar, then you should toggle it back off. The snapshot string appears in your TradingView alerts and can be pasted into the Restore String field later.")
+applyCheckpointNow   = input.bool(true, "Import on Next Bar (toggle)", group=groupSnap, tooltip="When toggled on, the indicator will apply the Restore String contents on the next confirmed bar, overwriting the current adaptive parameters and grid cells with the saved state. Used in combination with a filled Restore String field.")
+maxCellsToSerialize  = input.int(40,    "Max Cells in Export", minval=10, maxval=200, group=groupSnap, tooltip="How many regime grid cells (selected by highest trade count) to include in the exported snapshot string. Higher values produce a more complete snapshot but a longer string. Lower values create a smaller, faster export that only preserves the most-visited cells.")
+
+// ═══════════════════════════════════════════════════════════
+//  GROUP 13 — DISPLAY & SIZING
+// ═══════════════════════════════════════════════════════════
+groupDisp = "⑬ Display & Sizing"
+rsiTop          = input.int(70,      "RSI Hot Level", minval=60, maxval=90, group=groupDisp, tooltip="The overbought threshold for the RSI momentum filter. For a sell signal to be confirmed, RSI must have been above this level within the Hot Zone Memory lookback. Higher values mean RSI must reach more extreme overbought levels before sell signals can fire, producing fewer sell signals.")
+rsiBot          = input.int(30,      "RSI Cold Level", minval=10, maxval=40, group=groupDisp, tooltip="The oversold threshold for the RSI momentum filter. For a buy signal to be confirmed, RSI must have been below this level within the Cold Zone Memory lookback. Lower values mean RSI must reach more extreme oversold levels before buy signals can fire, producing fewer buy signals.")
+inp_fast_len    = input.int(9,       "Fast Ribbon", minval=2, maxval=200, group=groupDisp, tooltip="Fast moving average period used internally by the adaptive system for parameter calculations. Not plotted on the chart. Lower values create a more reactive average.")
+inp_slow_len    = input.int(21,      "Slow Ribbon", minval=3, maxval=400, group=groupDisp, tooltip="Slow moving average period used internally by the adaptive system. Not plotted on the chart. Higher values create a smoother, slower-reacting average.")
+inp_breakout_buf= input.float(0.20,  "Edge Buffer (xATR)", minval=0.0, maxval=3.0, step=0.05, group=groupDisp, tooltip="Base breakout buffer distance in ATR multiples. Defines how far past a price level the market must push to confirm a breakout. Higher values require a bigger move beyond the level. This is the starting value that the adaptive engine may adjust over time.")
+inp_stop_mult   = input.float(1.00,  "Guard (xATR)", minval=0.3, maxval=3.0, step=0.05, group=groupDisp, tooltip="Base stop-loss distance in ATR multiples, used by the background test matrix and optimizer as their starting point. Higher values create wider stops — fewer trades get stopped out, but losses are larger when wrong. Lower values create tighter stops — more trades get stopped out, but losses are smaller. Important for shaping the risk/reward profile the optimizer learns from.")
+inp_tp_mult     = input.float(2.00,  "Target (xATR)", minval=0.5, maxval=5.0, step=0.05, group=groupDisp, tooltip="Base take-profit distance in ATR multiples. Higher values target bigger moves, which lowers win rate but produces bigger winners. Lower values take profits earlier, which raises win rate but caps upside. Together with Guard, this defines the base risk/reward ratio the optimizer starts from. Important for learning trajectory.")
+trade_size_usd  = input.float(1000.0,"Sim Position (USD)", minval=1, step=1, group=groupDisp, tooltip="Hypothetical position size in USD used by the background test matrix for P&L calculations. This scales all USD-based learning metrics, risk guard thresholds, and session loss limits proportionally. Does not affect actual trading — it only governs the internal simulation's dollar math.")
+
+// Risk Management inputs
+ShowTpSlAreas  = input(true,  "Show TP & SL", group="Risk Management")
+tpSlSignalType = input.string("Contrarian", "TP/SL for", options=["Contrarian", "AI Supertrend", "Both"], group="Risk Management", tooltip="Choose which signal type drives the TP & SL levels. 'Contrarian' uses the WPR reversal signals. 'AI Supertrend' uses the adaptive supertrend signals. 'Both' triggers on either.")
+
+usePercSL      = input(false, "SL", inline="0", group="Risk Management")
+percTrailingSL = input.float(1, "", 0, step=0.1, inline="0", group="Risk Management")
+useTP1         = input(true,  "", inline="1", group="Risk Management")
+multTP1        = input.float(1, "TP 1", 0, inline="1", group="Risk Management")
+
+useTP2 = input(true,  "", inline="4", group="Risk Management")
+multTP2 = input.float(2, "TP 2", 0, inline="4", group="Risk Management")
+useTP3 = input(true,  "", inline="5", group="Risk Management")
+multTP3 = input.float(3, "TP 3", 0, inline="5", group="Risk Management")
+
+
+// ═════════════════════════════════════════════════════════════
+//  CONSTANTS & UTILITIES
+// ═════════════════════════════════════════════════════════════
+const int HOLD_BARS_FIXED = 5
+const int MATRIX_SLOTS_PER_SIDE = 5
+const bool MATRIX_ALWAYS_ON = true
+
+clamp(v, lo, hi) => math.max(lo, math.min(hi, v))
+quantize(x, step) => step == 0 ? x : math.round(x / step) * step
+nz0(x) => na(x) ? 0.0 : x
+to_num(s) =>
+    v = str.tonumber(s)
+    na(v) ? na : float(v)
+
+safeArrayPush(arr, val, maxSize) =>
+    if array.size(arr) >= maxSize
+        array.shift(arr)
+    array.push(arr, val)
+
+rma_var(x, len) =>
+    L = math.max(1.0, float(len))
+    a = 1.0 / L
+    var float y = na
+    y := na(y[1]) ? x : y[1] + a * (x - y[1])
+    y
+
+ema_var(x, len) =>
+    L = math.max(1.0, float(len))
+    a = 2.0 / (L + 1.0)
+    var float y = na
+    y := na(y[1]) ? x : a * x + (1.0 - a) * y[1]
+    y
+
+getSupertrend_var(_src, _mult, _len, _useATR) =>
+    trSm = _useATR ? rma_var(ta.tr, _len) : ema_var(ta.tr, _len)
+    upper = _src - _mult * trSm
+    lower = _src + _mult * trSm
+    upper := close[1] > upper[1] ? math.max(upper, upper[1]) : upper
+    lower := close[1] < lower[1] ? math.min(lower, lower[1]) : lower
+    var int trend = 1
+    trend := trend == -1 and close > lower[1] ? 1 : trend == 1 and close < upper[1] ? -1 : trend
+    [trend, upper, lower]
+
+// ═════════════════════════════════════════════════════════════
+//  EXECUTION LEDGER
+// ═════════════════════════════════════════════════════════════
+var array<float> execSuccessRate = array.new_float(0)
+var array<int>   execTimestamps  = array.new_int(0)
+var array<float> execSlippage    = array.new_float(0)
+var array<float> execPrices      = array.new_float(0)
+
+updateExecLedger(expectedPrice, actualPrice, success) =>
+    slippage = math.abs(actualPrice - expectedPrice) / expectedPrice
+    safeArrayPush(execSuccessRate, success ? 1.0 : 0.0, 100)
+    safeArrayPush(execTimestamps, bar_index, 100)
+    safeArrayPush(execSlippage, slippage, 100)
+    safeArrayPush(execPrices, actualPrice, 100)
+    successRate = 0.0
+    avgSlippage = 0.0
+    if array.size(execSuccessRate) >= 20
+        recentSuccess = 0.0
+        recentSlippage = 0.0
+        for i = array.size(execSuccessRate) - 20 to array.size(execSuccessRate) - 1
+            recentSuccess += array.get(execSuccessRate, i)
+            recentSlippage += array.get(execSlippage, i)
+        successRate := recentSuccess / 20
+        avgSlippage := recentSlippage / 20
+    [successRate, avgSlippage]
+
+// ═════════════════════════════════════════════════════════════
+//  PERFORMANCE SCORECARD
+// ═════════════════════════════════════════════════════════════
+type Scorecard
+    array<float> returns
+    array<float> drawdowns
+    float sharpe
+    float sortino
+    float calmar
+    float maxDrawdown
+    int consecutiveWins
+    int consecutiveLosses
+    float avgWin
+    float avgLoss
+    float profitFactor
+
+var Scorecard scoreLong  = Scorecard.new(array.new_float(0), array.new_float(0), 0.0, 0.0, 0.0, 0.0, 0, 0, 0.0, 0.0, 0.0)
+var Scorecard scoreShort = Scorecard.new(array.new_float(0), array.new_float(0), 0.0, 0.0, 0.0, 0.0, 0, 0, 0.0, 0.0, 0.0)
+
+updateScorecard(sc, returns, isWin) =>
+    safeArrayPush(sc.returns, returns, 100)
+    if isWin
+        sc.consecutiveWins += 1
+        sc.consecutiveLosses := 0
+    else
+        sc.consecutiveWins := 0
+        sc.consecutiveLosses += 1
+    if array.size(sc.returns) >= 30
+        avgReturn = array.avg(sc.returns)
+        stdDev = array.stdev(sc.returns)
+        sc.sharpe := stdDev > 0 ? avgReturn / stdDev * math.sqrt(252) : 0
+        negativeReturns = array.new_float(0)
+        positiveReturns = array.new_float(0)
+        for i = 0 to array.size(sc.returns) - 1
+            ret = array.get(sc.returns, i)
+            if ret < 0
+                array.push(negativeReturns, ret)
+            else
+                array.push(positiveReturns, ret)
+        if array.size(negativeReturns) > 0
+            downsideDev = array.stdev(negativeReturns)
+            sc.sortino := downsideDev > 0 ? avgReturn / downsideDev * math.sqrt(252) : 0
+            sc.avgLoss := array.avg(negativeReturns)
+        if array.size(positiveReturns) > 0
+            sc.avgWin := array.avg(positiveReturns)
+        sc.profitFactor := sc.avgLoss != 0 ? math.abs(sc.avgWin / sc.avgLoss) : 0
+        cumReturns = 0.0
+        peak = 0.0
+        for i = 0 to array.size(sc.returns) - 1
+            cumReturns += array.get(sc.returns, i)
+            peak := math.max(peak, cumReturns)
+            dd = peak - cumReturns
+            sc.maxDrawdown := math.max(sc.maxDrawdown, dd)
+
+// ═════════════════════════════════════════════════════════════
+//  RISK GUARD ENGINE
+// ═════════════════════════════════════════════════════════════
+var int  cooldownUntilBar    = 0
+var int  tradesThisSession   = 0
+var float sessionPnL         = 0.0
+var int  consecutiveLossCount= 0
+var float lastLossMagnitude  = 0.0
+
+canTradeNow() =>
+    bar_index > cooldownUntilBar and tradesThisSession < maxTradesPerSession and sessionPnL > maxSessionLoss and consecutiveLossCount < maxConsecutiveLosses
+
+calcRiskGuard(pnl, currTrades, currPnL, currStreak, currCooldown) =>
+    newTrades   = currTrades + 1
+    newPnL      = currPnL + pnl
+    newStreak   = currStreak
+    newCooldown = currCooldown
+    newLossMag  = 0.0
+    if pnl < 0
+        newStreak  := currStreak + 1
+        newLossMag := math.abs(pnl)
+        if enableDynamicCooldown
+            lossScale    = newLossMag / (trade_size_usd * 0.02)
+            cooldownBars = int(math.min(50, baseCooldownBars * (1 + lossScale)))
+            newCooldown  := bar_index + cooldownBars
+        else
+            newCooldown := bar_index + baseCooldownBars
+    else
+        newStreak := 0
+    [newTrades, newPnL, newStreak, newCooldown, newLossMag]
+
+// ═════════════════════════════════════════════════════════════
+//  LIVE PRESSURE SENSOR
+// ═════════════════════════════════════════════════════════════
+varip float rtPressure        = 0
+varip float rtBullFlow        = 0
+varip float rtBearFlow        = 0
+varip float rtAnchorPrice     = close
+varip float rtFlowIntensity   = 0
+varip array<float> rtPressureLog = array.new_float(0)
+smaVolume20 = ta.sma(volume, 20)
+
+calcPressureSensor(isRealtime, currBull, currBear, currAnchor, currPressure, currIntensity) =>
+    newBull      = currBull
+    newBear      = currBear
+    newAnchor    = close
+    newPressure  = currPressure
+    newIntensity = currIntensity
+    shouldLog    = false
+    if isRealtime and enableTickPressure
+        if close > currAnchor
+            newBull := currBull + volume
+        else if close < currAnchor
+            newBear := currBear + volume
+        totalFlow    = newBull + newBear
+        newPressure  := totalFlow > 0 ? (newBull - newBear) / totalFlow : 0
+        newIntensity := totalFlow > 0 ? math.log(1 + totalFlow / smaVolume20) : 0
+        if barstate.isconfirmed
+            shouldLog := true
+            newBull   := 0
+            newBear   := 0
+    [newBull, newBear, newAnchor, newPressure, newIntensity, shouldLog]
+
+getPressureBias() =>
+    bias = 0.0
+    if enableTickPressure and array.size(rtPressureLog) >= 5
+        bias := array.avg(rtPressureLog)
+    bias
+
+// ═════════════════════════════════════════════════════════════
+//  REGIME DETECTION
+// ═════════════════════════════════════════════════════════════
+calc_hurst(_len) =>
+    L = math.max(_len, 16)
+    mean = ta.sma(close, L)
+    dev = close - mean
+    cum = 0.0
+    maxCum = 0.0
+    minCum = 0.0
+    for i = 0 to L - 1
+        cum += nz0(dev[i])
+        maxCum := math.max(maxCum, cum)
+        minCum := math.min(minCum, cum)
+    R = maxCum - minCum
+    S = ta.stdev(close, L)
+    S == 0 ? 0.5 : clamp(math.log(R / S) / math.log(L), 0.0, 1.0)
+
+calc_entropy(_len) =>
+    L = math.max(_len, 16)
+    ups = 0.0
+    dns = 0.0
+    for i = 1 to L
+        diff = close[i - 1] - close[i]
+        ups += diff > 0 ? 1 : 0
+        dns += diff < 0 ? 1 : 0
+    tot = ups + dns
+    if tot == 0
+        0.0
+    else
+        p1 = ups / tot
+        p2 = dns / tot
+        H = 0.0
+        H += p1 > 0 ? -p1 * math.log(p1) : 0
+        H += p2 > 0 ? -p2 * math.log(p2) : 0
+        clamp(H / math.log(2), 0, 1)
+
+detect_market_regime() =>
+    [_, __, adx] = ta.dmi(14, 14)
+    trend_strength = na(adx) ? 0.5 : clamp(adx / 50.0, 0, 1)
+    H   = calc_hurst(64)
+    Ent = calc_entropy(64)
+    clamp(0.35 * (1 - Ent) + 0.35 * clamp((H - 0.5) * 2, 0, 1) + 0.30 * trend_strength, 0, 1)
+
+var float regime_score = 0.5
+var int   lastRegBar   = na
+regimeUpdateEvery = 7
+regime_val = detect_market_regime()
+if na(lastRegBar) or bar_index - lastRegBar >= regimeUpdateEvery
+    regime_score := regime_val
+    lastRegBar   := bar_index
+
+// ═════════════════════════════════════════════════════════════
+//  SOURCE & ADAPTIVE PARAMS
+// ═════════════════════════════════════════════════════════════
+src = switch sourceType
+    "open"  => open
+    "high"  => high
+    "low"   => low
+    "close" => close
+    "hl2"   => hl2
+    "hlc3"  => hlc3
+    "ohlc4" => ohlc4
+    "hlcc4" => hlcc4
+
+var float adaptive_sensitivity   = float(sensitivity)
+var float adaptive_atr_period    = float(atrPeriod)
+var float adaptive_multiplier    = multiplier
+var float adaptive_rsi_top       = float(rsiTop)
+var float adaptive_rsi_bot       = float(rsiBot)
+var float adaptive_fast_len      = float(inp_fast_len)
+var float adaptive_slow_len      = float(inp_slow_len)
+var float adaptive_breakout_buf  = float(inp_breakout_buf)
+var float adaptive_stop_mult     = float(inp_stop_mult)
+var float adaptive_tp_mult       = float(inp_tp_mult)
+
+atr_len_plot = lockATRBands ? atrPeriod : int(clamp(adaptive_atr_period, 5, 100))
+mult_plot    = lockATRBands ? multiplier : clamp(adaptive_multiplier, 0.5, 5.0)
+
+getSupertrend(_src, _mult, _len, _useATR) =>
+    tr = _useATR ? ta.atr(_len) : ta.sma(ta.tr, _len)
+    upper = _src - _mult * tr
+    lower = _src + _mult * tr
+    upper := close[1] > upper[1] ? math.max(upper, upper[1]) : upper
+    lower := close[1] < lower[1] ? math.min(lower, lower[1]) : lower
+    var int trend = 1
+    trend := trend == -1 and close > lower[1] ? 1 : trend == 1 and close < upper[1] ? -1 : trend
+    [trend, upper, lower]
+
+[rTrend, rUp, rDn] = getSupertrend(src, mult_plot, atr_len_plot, useATR)
+
+lowestHold  = ta.lowest(low, HOLD_BARS_FIXED)
+highestHold = ta.highest(high, HOLD_BARS_FIXED)
+atr_entry_now = useATR ? ta.atr(atr_len_plot) : ta.sma(ta.tr, atr_len_plot)
+
+// ═════════════════════════════════════════════════════════════
+//  BACKGROUND TEST MATRIX
+// ═════════════════════════════════════════════════════════════
+type ProbeEntry
+    float entry
+    int   entry_bar
+    int   dir
+    bool  active
+    float atr_entry
+
+var ProbeEntry[] probesLong  = array.new<ProbeEntry>()
+var ProbeEntry[] probesShort = array.new<ProbeEntry>()
+var int   long_total     = 0
+var int   short_total    = 0
+var int   long_wins      = 0
+var int   short_wins     = 0
+var float long_cum_usd   = 0.0
+var float short_cum_usd  = 0.0
+var float long_best      = na
+var float long_worst     = na
+var float short_best     = na
+var float short_worst    = na
+var array<float> long_roll_usd  = array.new_float()
+var array<float> short_roll_usd = array.new_float()
+var array<float> long_roll_atr  = array.new_float()
+var array<float> short_roll_atr = array.new_float()
+var float long_gp  = 0.0
+var float long_gl  = 0.0
+var float short_gp = 0.0
+var float short_gl = 0.0
+
+count_active(_book) =>
+    c = 0
+    if array.size(_book) > 0
+        for i = 0 to array.size(_book) - 1
+            tr = array.get(_book, i)
+            if tr.active
+                c += 1
+    c
+
+open_one(_book, _dir, _atr_entry) =>
+    int free_idx = na
+    if array.size(_book) > 0
+        for i = 0 to array.size(_book) - 1
+            tr = array.get(_book, i)
+            if not tr.active
+                free_idx := i
+                break
+    if na(free_idx)
+        t = ProbeEntry.new(open, bar_index, _dir, true, _atr_entry)
+        array.push(_book, t)
+    else
+        tr = array.get(_book, free_idx)
+        tr.entry     := open
+        tr.entry_bar := bar_index
+        tr.dir       := _dir
+        tr.active    := true
+        tr.atr_entry := _atr_entry
+        array.set(_book, free_idx, tr)
+
+close_one_if_matured(_book, _dir, _lowWin, _highWin, currGuard, currWidth) =>
+    float realized_usd = na
+    float realized_atr = na
+    float mae_atr      = na
+    int   idxMature    = na
+    int   oldestBar    = 1000000000
+    float newGuard     = currGuard
+    float newWidth     = currWidth
+    if array.size(_book) > 0
+        for i = 0 to array.size(_book) - 1
+            tr = array.get(_book, i)
+            if tr.active
+                bars_held = bar_index - tr.entry_bar + 1
+                if bars_held >= HOLD_BARS_FIXED
+                    if tr.entry_bar < oldestBar
+                        oldestBar := tr.entry_bar
+                        idxMature := i
+        if not na(idxMature)
+            tr  = array.get(_book, idxMature)
+            ret = (close - tr.entry) * tr.dir
+            realized_pct = tr.entry != 0 ? ret / tr.entry : 0.0
+            realized_usd := realized_pct * trade_size_usd
+            realized_atr := tr.atr_entry != 0 ? ret / tr.atr_entry : 0.0
+            mae_price     = _dir == 1 ? math.max(0.0, tr.entry - _lowWin) : math.max(0.0, _highWin - tr.entry)
+            mae_atr      := tr.atr_entry != 0 ? mae_price / tr.atr_entry : 0.0
+            tr.active    := false
+            array.set(_book, idxMature, tr)
+            [fillRate, slippage] = updateExecLedger(tr.entry, close, realized_usd > 0)
+            if fillRate < 0.6 and currGuard < 2.5
+                newGuard := currGuard * 1.02
+            if slippage > 0.002 and currWidth < 4.0
+                newWidth := currWidth * 1.01
+    [realized_usd, realized_atr, mae_atr, newGuard, newWidth]
+
+// ═════════════════════════════════════════════════════════════
+//  decay TRACE BUFFER
+// ═════════════════════════════════════════════════════════════
+type decayTrace
+    float atr_ret
+    float mae_atr
+    float regime
+    float vol_norm
+    float energy
+    int   dir
+
+var array<decayTrace> decayBuf = array.new<decayTrace>()
+
+decay_push(_atr_ret, _mae_atr, _reg, _vol, _dir) =>
+    array.push(decayBuf, decayTrace.new(_atr_ret, _mae_atr, _reg, _vol, 1.0, _dir))
+    while array.size(decayBuf) > stmSize
+        array.shift(decayBuf)
+
+decay_decay() =>
+    if array.size(decayBuf) > 0
+        for i = array.size(decayBuf) - 1 to 0
+            tr = array.get(decayBuf, i)
+            tr.energy := tr.energy * (1.0 - stmDecay)
+            if tr.energy < 0.05
+                array.remove(decayBuf, i)
+            else
+                array.set(decayBuf, i, tr)
+    0
+
+decay_tail_feedback() =>
+    n = array.size(decayBuf)
+    if n == 0
+        0.0
+    else
+        float sumW    = 0.0
+        float sumTail = 0.0
+        for i = 0 to n - 1
+            t = array.get(decayBuf, i)
+            sumW    += t.energy
+            sumTail += (t.mae_atr > stmMAE_tailThr ? t.energy : 0.0)
+        frac = sumW > 0 ? sumTail / sumW : 0.0
+        k = clamp((frac - 0.25) / 0.75, 0.0, 1.0)
+        -stmTailTightenCap * k
+
+// ═════════════════════════════════════════════════════════════
+//  REGIME GRID (CONTEXT MEMORY)
+// ═════════════════════════════════════════════════════════════
+type GridCell
+    float mean_atr_ret
+    float down_ewm
+    int   count
+    float conf
+    float d_mult
+    float d_len
+    float d_stop
+    float d_tp
+    float d_brk
+    int   last_upd
+
+var GridCell[] grid = array.new<GridCell>()
+var bool grid_inited = false
+if not grid_inited or array.size(grid) != mapGridX * mapGridY
+    array.clear(grid)
+    for i = 0 to (mapGridX * mapGridY) - 1
+        array.push(grid, GridCell.new(0.0, 0.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, na))
+    grid_inited := true
+
+vol_norm_fn() =>
+    a  = ta.atr(14)
+    av = ta.sma(a, 100)
+    r  = av == 0 ? 0.0 : a / av
+    clamp(r / volMaxRatio, 0.0, 1.0)
+vol_now = vol_norm_fn()
+
+bucket(_x, _bins)  => clamp(int(math.floor(_x * _bins)), 0, _bins - 1)
+cell_idx(ix, iy)   => ix * mapGridY + iy
+gauss(dx, dy, s)   => math.exp(-(dx * dx + dy * dy) / (2 * s * s))
+
+grid_update(ix, iy, atr_ret, dMultNet, dLenNet, dStopNet, dTPNet, dBrkNet) =>
+    int idx = cell_idx(ix, iy)
+    if idx >= 0 and idx < array.size(grid)
+        c = array.get(grid, idx)
+        alpha = 1.0 - math.exp(-math.log(2.0) / mapHalfLife)
+        c.mean_atr_ret := c.mean_atr_ret * (1 - alpha) + atr_ret * alpha
+        dn = atr_ret < 0 ? atr_ret * atr_ret : 0.0
+        c.down_ewm := c.down_ewm * (1 - alpha) + dn * alpha
+        c.count    += 1
+        c.conf     := 1.0 - math.exp(-c.count / mapConfScale)
+        c.d_mult   := c.d_mult * (1 - alpha) + dMultNet * alpha
+        c.d_len    := c.d_len  * (1 - alpha) + dLenNet  * alpha
+        c.d_stop   := c.d_stop * (1 - alpha) + dStopNet * alpha
+        c.d_tp     := c.d_tp   * (1 - alpha) + dTPNet   * alpha
+        c.d_brk    := c.d_brk  * (1 - alpha) + dBrkNet  * alpha
+        c.last_upd := bar_index
+        array.set(grid, idx, c)
+
+grid_recommend(ix, iy) =>
+    float wsum  = 0.0
+    float wconf = 0.0
+    float m_mult = 0.0
+    float m_len  = 0.0
+    float m_stop = 0.0
+    float m_tp   = 0.0
+    float m_brk  = 0.0
+    if array.size(grid) > 0
+        for dx = -1 to 1
+            for dy = -1 to 1
+                nx = clamp(ix + dx, 0, mapGridX - 1)
+                ny = clamp(iy + dy, 0, mapGridY - 1)
+                int idx = cell_idx(nx, ny)
+                if idx >= 0 and idx < array.size(grid)
+                    c = array.get(grid, idx)
+                    if not na(c) and c.count > 0
+                        w      = gauss(dx, dy, mapSigma)
+                        wsum  += w
+                        cf     = c.conf
+                        wconf += w * cf
+                        m_mult += w * cf * c.d_mult
+                        m_len  += w * cf * c.d_len
+                        m_stop += w * cf * c.d_stop
+                        m_tp   += w * cf * c.d_tp
+                        m_brk  += w * cf * c.d_brk
+    if wsum == 0
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    else
+        den = wconf == 0 ? wsum : wconf
+        [m_mult/den, m_len/den, m_stop/den, m_tp/den, m_brk/den, clamp(wconf/wsum, 0.0, 1.0)]
+
+// ═════════════════════════════════════════════════════════════
+//  ROLLING STATS
+// ═════════════════════════════════════════════════════════════
+roll_update(_arr, _val, _cap) =>
+    array.push(_arr, _val)
+    while array.size(_arr) > _cap
+        array.shift(_arr)
+
+roll_stats(_arr) =>
+    n = array.size(_arr)
+    if n == 0
+        [0.0, 0.0]
+    else
+        sum  = 0.0
+        wins = 0.0
+        for i = 0 to n - 1
+            v = array.get(_arr, i)
+            sum  += v
+            wins += v > 0 ? 1 : 0
+        [wins / n, sum / n]
+
+roll_avg(_arr) =>
+    n = array.size(_arr)
+    if n == 0
+        0.0
+    else
+        s = 0.0
+        for i = 0 to n - 1
+            s += array.get(_arr, i)
+        s / n
+
+roll_sortino(_arr) =>
+    n = array.size(_arr)
+    if n == 0
+        na
+    else
+        mean  = 0.0
+        ddSum = 0.0
+        ddCnt = 0.0
+        for i = 0 to n - 1
+            v = array.get(_arr, i)
+            mean += v
+            if v < 0
+                ddSum += v * v
+                ddCnt += 1
+        mean /= n
+        dd = ddCnt > 0 ? math.sqrt(ddSum / ddCnt) : na
+        na(dd) or dd == 0 ? na : mean / dd
+
+// ═════════════════════════════════════════════════════════════
+//  OPTIMIZER PROPOSALS
+// ═════════════════════════════════════════════════════════════
+learn_proposals_adv(winrate, avgUsd, avgAtr, sortino, avgMaeATR, pf, avgWin, avgLoss, sampleCount, curMult, curLen) =>
+    float dMult = 0.0
+    float dLen  = 0.0
+    float dStop = 0.0
+    float dTP   = 0.0
+    float dBrk  = 0.0
+    if learnEnabled and enableAdaptive and sampleCount > 0
+        conf = 1.0 / math.sqrt(math.max(1.0, float(sampleCount)))
+        step = learnRate * conf
+        pressureBias = getPressureBias()
+        weak   = (winrate < winLo) and ((useATRnorm ? avgAtr < 0 : avgUsd < 0))
+        strong = (winrate > winHi) and ((useATRnorm ? avgAtr > 0 : avgUsd > 0))
+        if math.abs(pressureBias) > 0.2
+            step *= (1 + math.abs(pressureBias) * 0.5)
+        if weak
+            dMult += +0.08 * step
+            dLen  += +curLen * 0.05 * step
+        if strong
+            dMult += -0.05 * step
+            dLen  += -curLen * 0.03 * step
+        if avgMaeATR > 0.60
+            dMult += +0.02 * step
+        if not na(sortino)
+            if sortino < 0
+                dMult += +0.04 * step
+            if sortino > 1.2
+                dMult += -0.03 * step
+        if winrate > winHi and pf > 0 and pf < 1.2
+            dTP += +0.02 * step
+        if winrate < winLo and avgLoss > avgWin * 1.2
+            dStop += -0.03 * step
+        if winrate < winLo and avgLoss <= avgWin * 1.2
+            dStop += +0.02 * step
+        if regime_score >= 0.7 and (useATRnorm ? avgAtr > 0 : avgUsd > 0)
+            dBrk += -0.02 * step
+        if regime_score <= 0.3 and (useATRnorm ? avgAtr < 0 : avgUsd < 0)
+            dBrk += +0.02 * step
+        sc = sampleCount > 0 ? (avgAtr > 0 ? scoreLong : scoreShort) : scoreLong
+        if sc.sharpe < 0.5
+            dMult += +0.02 * step
+        if sc.sortino > 1.5
+            dMult += -0.02 * step
+        if sc.consecutiveLosses >= 3
+            dStop += +0.03 * step
+    [dMult, dLen, dStop, dTP, dBrk]
+
+// ═════════════════════════════════════════════════════════════
+//  MICRO-BATCH PROCESSING
+// ═════════════════════════════════════════════════════════════
+type BatchSample
+    float atr_ret
+    float mae_atr
+    float pnl_usd
+    float conf
+
+var array<BatchSample> batchL = array.new<BatchSample>()
+var array<BatchSample> batchS = array.new<BatchSample>()
+
+batch_push(_bin, _atr, _mae, _pnl, _conf) =>
+    array.push(_bin, BatchSample.new(_atr, _mae, _pnl, _conf))
+
+master_params(_K) =>
+    k = (float(_K) - 1.0) / 19.0
+    N = clamp(int(math.round(20.0 - 16.0 * k)), 4, 20)
+    S = math.max(1, int(math.round(N * (1.0 - 0.9 * k))))
+    Wmin     = math.max(0.0, float(N) * (0.80 - 0.40 * k))
+    w_batch  = 0.25 + 0.35 * k
+    capMult  = 0.02 + 0.06 * k
+    capLen   = 0.5 + 1.5 * k
+    capStop  = 0.01 + 0.04 * k
+    capTP    = 0.01 + 0.03 * k
+    capBrk   = 0.005 + 0.025 * k
+    dbMultEff = math.max(0.003, deadbandMult * (1.0 - 0.6 * k))
+    dbLenEff  = math.max(0.10, deadbandLen * (1.0 - 0.6 * k))
+    alphaEff  = clamp(0.25 + 0.40 * k, 0.20, 0.65)
+    [N, S, Wmin, w_batch, capMult, capLen, capStop, capTP, capBrk, dbMultEff, dbLenEff, alphaEff]
+
+batch_fire(_bin, _N, _stride, _Wmin, _capMult, _capLen, _capStop, _capTP, _capBrk) =>
+    bool  fired = false
+    float dMult = 0.0
+    float dLen  = 0.0
+    float dStop = 0.0
+    float dTP   = 0.0
+    float dBrk  = 0.0
+    float mu    = na
+    float pf    = na
+    float sr    = na
+    float mae   = na
+    float sumw  = 0.0
+    if array.size(_bin) >= _N
+        fired := true
+        float sumRet    = 0.0
+        float wNeg      = 0.0
+        float sumNegVar = 0.0
+        float sumW      = 0.0
+        float sumMAE    = 0.0
+        float gpW       = 0.0
+        float glW       = 0.0
+        for i = 0 to _N - 1
+            e     = array.get(_bin, i)
+            wConf = clamp(e.conf, 0.0, 1.0)
+            wQual = 1.0 / (1.0 + math.max(0.0, e.mae_atr))
+            w     = wConf * wQual
+            sumW    += w
+            sumRet  += w * e.atr_ret
+            if e.atr_ret < 0
+                wNeg    += w
+                sumNegVar += w * (e.atr_ret * e.atr_ret)
+            sumMAE += w * e.mae_atr
+            if e.pnl_usd > 0
+                gpW += w * e.pnl_usd
+            else if e.pnl_usd < 0
+                glW += w * (-e.pnl_usd)
+        sumw := sumW
+        mu   := sumW > 0 ? sumRet / sumW : 0.0
+        sr   := (wNeg > 0 and sumNegVar > 0) ? (mu / math.sqrt(sumNegVar / wNeg)) : na
+        pf   := glW > 0 ? gpW / glW : (gpW > 0 ? 9.99 : 0.0)
+        mae  := sumW > 0 ? sumMAE / sumW : 0.0
+        confF = _Wmin > 0 ? clamp(sumW / _Wmin, 0.0, 1.5) : 1.0
+        bool good = (mu > 0) and (pf > 1.15) and (na(sr) or sr > 0.8)
+        bool bad  = (mu < 0) or (pf < 0.95) or (not na(sr) and sr < 0.2)
+        if good
+            dMult := -_capMult * confF
+            dLen  := -_capLen  * confF
+            dStop := -_capStop * confF
+            dTP   := +_capTP * 0.5 * confF
+            dBrk  := -_capBrk * confF
+        if bad
+            dMult := +_capMult * confF
+            dLen  := +_capLen  * confF
+            dStop := (mae > 0.6 ? -_capStop : +0.5 * _capStop) * confF
+            dTP   := -0.3 * _capTP * confF
+            dBrk  := +_capBrk * confF
+        for j = 0 to _stride - 1
+            if array.size(_bin) > 0
+                array.shift(_bin)
+    [fired, dMult, dLen, dStop, dTP, dBrk, mu, pf, sr, mae, sumw]
+
+// ═════════════════════════════════════════════════════════════
+//  STATE SNAPSHOT SERIALIZATION
+// ═════════════════════════════════════════════════════════════
+serialize_cells(maxN) =>
+    string out = ""
+    int n = 0
+    if array.size(grid) > 0
+        for i = 0 to array.size(grid) - 1
+            if i < array.size(grid)
+                c = array.get(grid, i)
+                if not na(c) and c.count > 0 and n < maxN
+                    out += str.format("{0},{1},{2},{3},{4},{5},{6},{7},{8};", i, c.count, math.round(c.mean_atr_ret*1000), math.round(c.down_ewm*1000), math.round(c.d_mult*1000), math.round(c.d_len), math.round(c.d_stop*1000), math.round(c.d_tp*1000), math.round(c.d_brk*1000))
+                    n += 1
+    out
+
+deserialize_cells(s) =>
+    applied = false
+    parts = str.split(s, ";")
+    for k = 0 to array.size(parts) - 1
+        p = array.get(parts, k)
+        if str.length(p) > 0
+            fields = str.split(p, ",")
+            if array.size(fields) >= 9
+                idx = int(to_num(array.get(fields, 0)))
+                if idx >= 0 and idx < array.size(grid)
+                    c = array.get(grid, idx)
+                    c.count        := int(to_num(array.get(fields, 1)))
+                    c.mean_atr_ret := float(int(to_num(array.get(fields, 2)))) / 1000.0
+                    c.down_ewm     := float(int(to_num(array.get(fields, 3)))) / 1000.0
+                    c.conf         := 1.0 - math.exp(-c.count / mapConfScale)
+                    c.d_mult       := float(int(to_num(array.get(fields, 4)))) / 1000.0
+                    c.d_len        := float(int(to_num(array.get(fields, 5))))
+                    c.d_stop       := float(int(to_num(array.get(fields, 6)))) / 1000.0
+                    c.d_tp         := float(int(to_num(array.get(fields, 7)))) / 1000.0
+                    c.d_brk        := float(int(to_num(array.get(fields, 8)))) / 1000.0
+                    c.last_upd     := bar_index
+                    array.set(grid, idx, c)
+                    applied := true
+    applied
+
+serialize_snapshot() =>
+    str.format("V1|SYM={0}|TF={1}|A={2},{3},{4},{5},{6}|C=", syminfo.tickerid, timeframe.period, math.round(adaptive_multiplier*100), int(math.round(adaptive_atr_period)), math.round(adaptive_stop_mult*100), math.round(adaptive_tp_mult*100), math.round(adaptive_breakout_buf*100)) + serialize_cells(maxCellsToSerialize)
+
+restore_snapshot(s) =>
+    bool  success  = false
+    float new_mult = na
+    float new_len  = na
+    float new_stop = na
+    float new_tp   = na
+    float new_brk  = na
+    if str.length(s) > 0
+        parts = str.split(s, "|")
+        string cells = ""
+        for i = 0 to array.size(parts) - 1
+            seg = array.get(parts, i)
+            if str.startswith(seg, "A=")
+                vals = str.split(str.replace(seg, "A=", ""), ",")
+                if array.size(vals) >= 5
+                    a_mult = to_num(array.get(vals, 0))
+                    a_len  = to_num(array.get(vals, 1))
+                    a_stop = to_num(array.get(vals, 2))
+                    a_tp   = to_num(array.get(vals, 3))
+                    a_brk  = to_num(array.get(vals, 4))
+                    if not na(a_mult)
+                        new_mult := float(a_mult) / 100.0
+                        success  := true
+                    if not na(a_len)
+                        new_len := float(a_len)
+                        success := true
+                    if not na(a_stop)
+                        new_stop := float(a_stop) / 100.0
+                        success  := true
+                    if not na(a_tp)
+                        new_tp  := float(a_tp) / 100.0
+                        success := true
+                    if not na(a_brk)
+                        new_brk := float(a_brk) / 100.0
+                        success := true
+            if str.startswith(seg, "C=")
+                cells := str.replace(seg, "C=", "")
+        if str.length(cells) > 0
+            success := success or deserialize_cells(cells)
+    [success, new_mult, new_len, new_stop, new_tp, new_brk]
+
+// ═════════════════════════════════════════════════════════════
+//  MAIN AUTO-TUNE ENGINE
+// ═════════════════════════════════════════════════════════════
+var int   lastParamUpdateBar = na
+var int   barsSinceUpdate    = 0
+var float lastLongUSD        = na
+var float lastShortUSD       = na
+var bool  didUpdate          = false
+var bool  applyPending       = false
+
+if applyCheckpointNow and not applyCheckpointNow[1]
+    applyPending := true
+
+var bool  firedL  = false
+var float dMultBL = 0.0
+var float dLenBL  = 0.0
+var float dStopBL = 0.0
+var float dTPBL   = 0.0
+var float dBrkBL  = 0.0
+var float muBL    = 0.0
+var bool  firedS  = false
+var float dMultBS = 0.0
+var float dLenBS  = 0.0
+var float dStopBS = 0.0
+var float dTPBS   = 0.0
+var float dBrkBS  = 0.0
+var float muBS    = 0.0
+
+[N_batch, stride_batch, Wmin_batch, w_batch_base, capMult_batch, capLen_batch, capStop_batch, capTP_batch, capBrk_batch, dbMultEff, dbLenEff, alphaEff] = master_params(dialK)
+
+[newBull, newBear, newAnchor, newPressure, newIntensity, shouldLog] = calcPressureSensor(barstate.isrealtime, rtBullFlow, rtBearFlow, rtAnchorPrice, rtPressure, rtFlowIntensity)
+if barstate.isrealtime
+    rtBullFlow     := newBull
+    rtBearFlow     := newBear
+    rtAnchorPrice  := newAnchor
+    rtPressure     := newPressure
+    rtFlowIntensity:= newIntensity
+    if shouldLog
+        safeArrayPush(rtPressureLog, rtPressure, 20)
+
+bool isDayChange = not na(ta.change(dayofweek)) and ta.change(dayofweek) != 0
+if isDayChange
+    tradesThisSession := 0
+    sessionPnL        := 0.0
+
+if enableAdaptive and usefaintCycle and barstate.isconfirmed
+    bool canOpenNew = MATRIX_ALWAYS_ON ? true : (applyRiskTofaint ? canTradeNow() : true)
+
+    [lUsd, lAtr, lMae, newGuardL, newWidthL] = close_one_if_matured(probesLong,  +1, lowestHold, highestHold, adaptive_stop_mult, adaptive_multiplier)
+    [sUsd, sAtr, sMae, newGuardS, newWidthS] = close_one_if_matured(probesShort, -1, lowestHold, highestHold, adaptive_stop_mult, adaptive_multiplier)
+
+    adaptive_stop_mult  := newGuardL
+    adaptive_multiplier := newWidthL
+    adaptive_stop_mult  := newGuardS
+    adaptive_multiplier := newWidthS
+
+    if not na(lUsd)
+        lastLongUSD  := lUsd
+        long_total   += 1
+        long_wins    += lUsd > 0 ? 1 : 0
+        long_cum_usd += lUsd
+        long_best    := na(long_best)  ? lUsd : math.max(long_best,  lUsd)
+        long_worst   := na(long_worst) ? lUsd : math.min(long_worst, lUsd)
+        roll_update(long_roll_usd, math.max(-pnlCapUSD, math.min(pnlCapUSD, lUsd)), rollN)
+        roll_update(long_roll_atr, lAtr, rollN)
+        if lUsd >= 0
+            long_gp += lUsd
+        else
+            long_gl += -lUsd
+        updateScorecard(scoreLong, lAtr, lUsd > 0)
+        if applyRiskTofaint
+            [newTradesL, newPnlL, newStreakL, newCooldownL, newLossMagL] = calcRiskGuard(lUsd, tradesThisSession, sessionPnL, consecutiveLossCount, cooldownUntilBar)
+            tradesThisSession    := newTradesL
+            sessionPnL           := newPnlL
+            consecutiveLossCount := newStreakL
+            cooldownUntilBar     := newCooldownL
+            if newLossMagL > 0
+                lastLossMagnitude := newLossMagL
+        else
+            sessionPnL += lUsd
+        if useSTM
+            decay_push(lAtr, lMae, regime_score, vol_now, +1)
+        [__, __l, __s, __tp, __brk, confCur] = grid_recommend(bucket(regime_score, mapGridX), bucket(vol_now, mapGridY))
+        if enableBinLearning
+            batch_push(batchL, lAtr, lMae, lUsd, useCognitiveMap ? confCur : 1.0)
+
+    if not na(sUsd)
+        lastShortUSD  := sUsd
+        short_total   += 1
+        short_wins    += sUsd > 0 ? 1 : 0
+        short_cum_usd += sUsd
+        short_best    := na(short_best)  ? sUsd : math.max(short_best,  sUsd)
+        short_worst   := na(short_worst) ? sUsd : math.min(short_worst, sUsd)
+        roll_update(short_roll_usd, math.max(-pnlCapUSD, math.min(pnlCapUSD, sUsd)), rollN)
+        roll_update(short_roll_atr, sAtr, rollN)
+        if sUsd >= 0
+            short_gp += sUsd
+        else
+            short_gl += -sUsd
+        updateScorecard(scoreShort, sAtr, sUsd > 0)
+        if applyRiskTofaint
+            [newTradesS, newPnlS, newStreakS, newCooldownS, newLossMagS] = calcRiskGuard(sUsd, tradesThisSession, sessionPnL, consecutiveLossCount, cooldownUntilBar)
+            tradesThisSession    := newTradesS
+            sessionPnL           := newPnlS
+            consecutiveLossCount := newStreakS
+            cooldownUntilBar     := newCooldownS
+            if newLossMagS > 0
+                lastLossMagnitude := newLossMagS
+        else
+            sessionPnL += sUsd
+        if useSTM
+            decay_push(sAtr, sMae, regime_score, vol_now, -1)
+        [___, ___l, ___s, ___tp, ___brk, confCur2] = grid_recommend(bucket(regime_score, mapGridX), bucket(vol_now, mapGridY))
+        if enableBinLearning
+            batch_push(batchS, sAtr, sMae, sUsd, useCognitiveMap ? confCur2 : 1.0)
+
+    if useSTM
+        decay_decay()
+        if bar_index % stmConsolidateEvery == 0 and array.size(decayBuf) > 0 and useCognitiveMap
+            dStopdecay = decay_tail_feedback()
+            int posIdx = na
+            int negIdx = na
+            float posMag = -1.0
+            float negMag = -1.0
+            for i = 0 to array.size(decayBuf) - 1
+                t   = array.get(decayBuf, i)
+                mag = math.abs(t.atr_ret) * t.energy
+                if t.atr_ret >= 0 and mag > posMag
+                    posMag := mag
+                    posIdx := i
+                if t.atr_ret < 0 and mag > negMag
+                    negMag := mag
+                    negIdx := i
+            if not na(posIdx)
+                tpos = array.get(decayBuf, posIdx)
+                grid_update(bucket(tpos.regime, mapGridX), bucket(tpos.vol_norm, mapGridY), tpos.atr_ret, 0.0, 0.0, dStopdecay, 0.0, 0.0)
+            if not na(negIdx)
+                tneg = array.get(decayBuf, negIdx)
+                grid_update(bucket(tneg.regime, mapGridX), bucket(tneg.vol_norm, mapGridY), tneg.atr_ret, 0.0, 0.0, dStopdecay, 0.0, 0.0)
+
+    if count_active(probesLong) < MATRIX_SLOTS_PER_SIDE
+        open_one(probesLong, +1, atr_entry_now)
+    if count_active(probesShort) < MATRIX_SLOTS_PER_SIDE
+        open_one(probesShort, -1, atr_entry_now)
+
+    // Compute optimizer proposals
+    longCount  = array.size(long_roll_atr)
+    shortCount = array.size(short_roll_atr)
+    [wrL, avgUsdL] = roll_stats(long_roll_usd)
+    [wrS, avgUsdS] = roll_stats(short_roll_usd)
+    avgAtrL = roll_avg(long_roll_atr)
+    avgAtrS = roll_avg(short_roll_atr)
+    sortL   = roll_sortino(long_roll_atr)
+    sortS   = roll_sortino(short_roll_atr)
+    pfL     = long_gl  > 0 ? long_gp  / long_gl  : (long_gp  > 0 ? 9.99 : 0.0)
+    pfS     = short_gl > 0 ? short_gp / short_gl : (short_gp > 0 ? 9.99 : 0.0)
+    avgWinL  = long_wins  > 0 ? long_gp  / long_wins  : 0.0
+    avgLossL = (long_total  - long_wins)  > 0 ? long_gl  / (long_total  - long_wins)  : 0.0
+    avgWinS  = short_wins > 0 ? short_gp / short_wins : 0.0
+    avgLossS = (short_total - short_wins) > 0 ? short_gl / (short_total - short_wins) : 0.0
+
+    [dMultL, dLenL, dStopL, dTPL, dBrkL] = learn_proposals_adv(wrL, avgUsdL, avgAtrL, sortL, 0.0, pfL, avgWinL, avgLossL, longCount, adaptive_multiplier, adaptive_atr_period)
+    [dMultS, dLenS, dStopS, dTPS, dBrkS] = learn_proposals_adv(wrS, avgUsdS, avgAtrS, sortS, 0.0, pfS, avgWinS, avgLossS, shortCount, adaptive_multiplier, adaptive_atr_period)
+
+    netMult_global = (longCount > 0 ? dMultL : 0.0) + (shortCount > 0 ? dMultS : 0.0)
+    netLen_global  = (longCount > 0 ? dLenL  : 0.0) + (shortCount > 0 ? dLenS  : 0.0)
+    netStop_global = (longCount > 0 ? dStopL : 0.0) + (shortCount > 0 ? dStopS : 0.0)
+    netTP_global   = (longCount > 0 ? dTPL   : 0.0) + (shortCount > 0 ? dTPS   : 0.0)
+    netBrk_global  = (longCount > 0 ? dBrkL  : 0.0) + (shortCount > 0 ? dBrkS  : 0.0)
+
+    int ix = bucket(regime_score, mapGridX)
+    int iy = bucket(vol_now, mapGridY)
+    [grd_mult, grd_len, grd_stop, grd_tp, grd_brk, grd_conf] = grid_recommend(ix, iy)
+
+    targetMult_grid = multiplier    * (1 + grd_mult)
+    targetLen_grid  = atrPeriod     + grd_len
+    targetStop_grid = inp_stop_mult * (1 + grd_stop)
+    targetTP_grid   = inp_tp_mult   * (1 + grd_tp)
+    targetBrk_grid  = inp_breakout_buf * (1 + grd_brk)
+
+    targetMult_glb  = adaptive_multiplier   * (1 + netMult_global)
+    targetLen_glb   = adaptive_atr_period   + netLen_global
+    targetStop_glb  = adaptive_stop_mult    * (1 + netStop_global)
+    targetTP_glb    = adaptive_tp_mult      * (1 + netTP_global)
+    targetBrk_glb   = adaptive_breakout_buf * (1 + netBrk_global)
+
+    float w_grid = clamp(grd_conf, 0.0, mapWeightMax)
+    targetMult_MG = targetMult_grid * w_grid + targetMult_glb * (1 - w_grid)
+    targetLen_MG  = targetLen_grid  * w_grid + targetLen_glb  * (1 - w_grid)
+    targetStop_MG = targetStop_grid * w_grid + targetStop_glb * (1 - w_grid)
+    targetTP_MG   = targetTP_grid   * w_grid + targetTP_glb   * (1 - w_grid)
+    targetBrk_MG  = targetBrk_grid  * w_grid + targetBrk_glb  * (1 - w_grid)
+
+    if enableBinLearning
+        [firedL_, dMultBL_, dLenBL_, dStopBL_, dTPBL_, dBrkBL_, muBL_, _, _, _, _] = batch_fire(batchL, N_batch, stride_batch, Wmin_batch, capMult_batch, capLen_batch, capStop_batch, capTP_batch, capBrk_batch)
+        [firedS_, dMultBS_, dLenBS_, dStopBS_, dTPBS_, dBrkBS_, muBS_, _, _, _, _] = batch_fire(batchS, N_batch, stride_batch, Wmin_batch, capMult_batch, capLen_batch, capStop_batch, capTP_batch, capBrk_batch)
+        firedL := firedL_, dMultBL := dMultBL_, dLenBL := dLenBL_, dStopBL := dStopBL_, dTPBL := dTPBL_, dBrkBL := dBrkBL_, muBL := muBL_
+        firedS := firedS_, dMultBS := dMultBS_, dLenBS := dLenBS_, dStopBS := dStopBS_, dTPBS := dTPBS_, dBrkBS := dBrkBS_, muBS := muBS_
+
+    float w_batch = (firedL or firedS) ? w_batch_base : 0.0
+    float wL = (firedL and (not firedS or math.abs(muBL) >= math.abs(muBS))) ? 0.7 : (firedL and firedS ? 0.3 : (firedL ? 1.0 : 0.0))
+    float wS = (firedS and (not firedL or math.abs(muBS) > math.abs(muBL)))  ? 0.7 : (firedL and firedS ? 0.3 : (firedS ? 1.0 : 0.0))
+
+    dMult_batch = wL * dMultBL + wS * dMultBS
+    dLen_batch  = wL * dLenBL  + wS * dLenBS
+    dStop_batch = wL * dStopBL + wS * dStopBS
+    dTP_batch   = wL * dTPBL   + wS * dTPBS
+    dBrk_batch  = wL * dBrkBL  + wS * dBrkBS
+
+    targetMult_batch = adaptive_multiplier   * (1 + dMult_batch)
+    targetLen_batch  = adaptive_atr_period   + dLen_batch
+    targetStop_batch = adaptive_stop_mult    * (1 + dStop_batch)
+    targetTP_batch   = adaptive_tp_mult      * (1 + dTP_batch)
+    targetBrk_batch  = adaptive_breakout_buf * (1 + dBrk_batch)
+
+    targetMult_final = (targetMult_MG * (1 - w_batch)) + (targetMult_batch * w_batch)
+    targetLen_final  = (targetLen_MG  * (1 - w_batch)) + (targetLen_batch  * w_batch)
+    targetStop_final = (targetStop_MG * (1 - w_batch)) + (targetStop_batch * w_batch)
+    targetTP_final   = (targetTP_MG   * (1 - w_batch)) + (targetTP_batch   * w_batch)
+    targetBrk_final  = (targetBrk_MG  * (1 - w_batch)) + (targetBrk_batch  * w_batch)
+
+    barsSinceUpdate += 1
+    didUpdate := false
+    canUpd = na(lastParamUpdateBar) or bar_index - lastParamUpdateBar >= paramUpdateEvery
+    if canUpd and (math.abs(targetMult_final - adaptive_multiplier) > dbMultEff or math.abs(targetLen_final - adaptive_atr_period) > dbLenEff)
+        newMult = clamp(quantize(targetMult_final, quantStepMult), 0.5, 5.0)
+        newLen  = clamp(math.round(targetLen_final), 5, 100)
+        newStop = clamp(quantize(targetStop_final, quantStepStop), 0.3, 3.0)
+        newTP   = clamp(quantize(targetTP_final,   quantStepTP),   0.5, 5.0)
+        newBrk  = clamp(quantize(targetBrk_final,  quantStepBrk),  0.0, 3.0)
+        adaptive_multiplier   := adaptive_multiplier   + (newMult - adaptive_multiplier)   * alphaEff
+        adaptive_atr_period   := adaptive_atr_period   + (newLen  - adaptive_atr_period)   * alphaEff
+        adaptive_stop_mult    := adaptive_stop_mult    + (newStop - adaptive_stop_mult)     * alphaEff
+        adaptive_tp_mult      := adaptive_tp_mult      + (newTP   - adaptive_tp_mult)       * alphaEff
+        adaptive_breakout_buf := adaptive_breakout_buf + (newBrk  - adaptive_breakout_buf)  * alphaEff
+        lastParamUpdateBar := bar_index
+        barsSinceUpdate    := 0
+        didUpdate          := true
+
+    if revertEvery > 0 and bar_index % revertEvery == 0
+        adaptive_multiplier := adaptive_multiplier + (multiplier - adaptive_multiplier) * revertStep
+        adaptive_atr_period := adaptive_atr_period + (atrPeriod  - adaptive_atr_period) * revertStep
+
+    if (not na(lUsd) or not na(sUsd)) and useCognitiveMap
+        ixC = bucket(regime_score, mapGridX)
+        iyC = bucket(vol_now, mapGridY)
+        if not na(lUsd)
+            grid_update(ixC, iyC, lAtr, netMult_global, netLen_global, netStop_global, netTP_global, netBrk_global)
+        if not na(sUsd)
+            grid_update(ixC, iyC, sAtr, netMult_global, netLen_global, netStop_global, netTP_global, netBrk_global)
+
+// Snapshot restore on first bar
+if barstate.isfirst and str.length(memoryCheckpoint) > 0
+    [ok, r_mult, r_len, r_stop, r_tp, r_brk] = restore_snapshot(memoryCheckpoint)
+    if ok
+        if not na(r_mult)
+            adaptive_multiplier := r_mult
+        if not na(r_len)
+            adaptive_atr_period := r_len
+        if not na(r_stop)
+            adaptive_stop_mult := r_stop
+        if not na(r_tp)
+            adaptive_tp_mult := r_tp
+        if not na(r_brk)
+            adaptive_breakout_buf := r_brk
+
+emitNow = emitCheckpointNow and not emitCheckpointNow[1]
+if emitNow
+    alert("Snapshot:" + serialize_snapshot(), alert.freq_once_per_bar)
+
+if barstate.isconfirmed and applyPending
+    [ok2, r_mult2, r_len2, r_stop2, r_tp2, r_brk2] = restore_snapshot(memoryCheckpoint)
+    if ok2
+        if not na(r_mult2)
+            adaptive_multiplier := r_mult2
+        if not na(r_len2)
+            adaptive_atr_period := r_len2
+        if not na(r_stop2)
+            adaptive_stop_mult := r_stop2
+        if not na(r_tp2)
+            adaptive_tp_mult := r_tp2
+        if not na(r_brk2)
+            adaptive_breakout_buf := r_brk2
+    applyPending := false
+
+// ═════════════════════════════════════════════════════════════
+//  SIGNAL GENERATION
+// ═════════════════════════════════════════════════════════════
+var array<float> high_prices   = array.new_float()
+var array<float> low_prices    = array.new_float()
+var array<float> rsi_values    = array.new_float()
+var array<float> volume_values = array.new_float()
+const int max_array_size_sig   = 500
+
+updateQueues_sig() =>
+    array.push(high_prices, high)
+    array.push(low_prices,  low)
+    if volume != 0
+        array.push(volume_values, volume)
+    array.push(rsi_values, ta.rsi(close, rsiLen))
+    if array.size(high_prices) > max_array_size_sig
+        array.shift(high_prices), array.shift(low_prices)
+    if array.size(volume_values) > max_array_size_sig
+        array.shift(volume_values)
+    if array.size(rsi_values) > max_array_size_sig
+        array.shift(rsi_values)
+
+getHighestFromArray(arr, len) =>
+    sz = array.size(arr)
+    sz < len or len <= 0 ? na : array.max(array.slice(arr, math.max(0, sz - len), sz))
+
+getLowestFromArray(arr, len) =>
+    sz = array.size(arr)
+    sz < len or len <= 0 ? na : array.min(array.slice(arr, math.max(0, sz - len), sz))
+
+updateQueues_sig()
+
+sigAtrLen = int(clamp(adaptive_atr_period, 5, 100))
+sigMult   = adaptive_multiplier
+[rTrendSig, rUpSig, rDnSig] = getSupertrend_var(src, sigMult, sigAtrLen, useATR)
+atrValueSig = useATR ? rma_var(ta.tr, sigAtrLen) : ema_var(ta.tr, sigAtrLen)
+
+rsi_calc_sig = ta.rsi(close, rsiLen)
+rsi_sig      = array.size(rsi_values) > 0 ? array.get(rsi_values, array.size(rsi_values) - 1) : rsi_calc_sig
+rsiColdCond  = not enableRSI or ta.barssince(rsi_sig < rsiBot) < rsiLookbackBot
+rsiHotCond   = not enableRSI or ta.barssince(rsi_sig > rsiTop) < rsiLookbackTop
+
+sma_calc_sig = ta.sma(volume, volLookback)
+volAvg_sig   = array.size(volume_values) >= volLookback ? array.avg(array.slice(volume_values, array.size(volume_values) - volLookback, array.size(volume_values))) : sma_calc_sig
+volSurge_sig = volume > volMultiplier * volAvg_sig
+
+sensSig     = clamp(int(math.round(adaptive_sensitivity)), 1, 100)
+lookbackSig = math.max(1, int(math.round(adaptive_sensitivity / 10.0)))
+
+highestVal = getHighestFromArray(high_prices, sensSig)
+lowestVal  = getLowestFromArray(low_prices,  sensSig)
+
+isNewHigh = not na(highestVal) and not na(highestVal[lookbackSig]) and highestVal != highestVal[lookbackSig] and close > nz(highestVal[lookbackSig], close)
+isNewLow  = not na(lowestVal)  and not na(lowestVal[lookbackSig])  and lowestVal  != lowestVal[lookbackSig]  and close < nz(lowestVal[lookbackSig],  close)
+
+atr_for_levels    = atrValueSig * majorLevelThreshold
+isSignificantHigh = isNewHigh and (high - getLowestFromArray(low_prices, sensSig)) > atr_for_levels
+isSignificantLow  = isNewLow  and (getHighestFromArray(high_prices, sensSig) - low) > atr_for_levels
+
+finalIsNewHigh = enableMajorLevelsOnly ? isSignificantHigh : isNewHigh
+finalIsNewLow  = enableMajorLevelsOnly ? isSignificantLow  : isNewLow
+
+var bool sellSignal    = false
+var bool buySignal     = false
+var int  topFlag       = 0
+var int  botFlag       = 0
+var int  lastSignalBar = 0
+
+sellSignal := false
+buySignal  := false
+
+buyFilters  = rsiColdCond and (not requireVolSpike or volSurge_sig)
+sellFilters = rsiHotCond  and (not requireVolSpike or volSurge_sig)
+bool canSignal = bar_index - lastSignalBar >= minBarsBetweenSignals
+
+if enableReversal and canSignal
+    topFlag := rTrendSig == -1 ? 0 : finalIsNewHigh and rTrendSig == 1 ? 1 : topFlag[1]
+    botFlag := rTrendSig ==  1 ? 0 : finalIsNewLow  and rTrendSig == -1 ? 1 : botFlag[1]
+    bool reversalSell = (topFlag[1] == 1 and topFlag == 0) or (not requireNewExtreme and rTrendSig[1] == 1  and rTrendSig == -1)
+    bool reversalBuy  = (botFlag[1] == 1 and botFlag == 0) or (not requireNewExtreme and rTrendSig[1] == -1 and rTrendSig == 1)
+    if reversalSell and sellFilters
+        sellSignal    := true
+        lastSignalBar := bar_index
+    else if reversalBuy and buyFilters
+        buySignal     := true
+        lastSignalBar := bar_index
+
+if enableBreakout and canSignal
+    if finalIsNewHigh and rTrendSig == 1 and sellFilters
+        sellSignal    := true
+        lastSignalBar := bar_index
+    else if finalIsNewLow and rTrendSig == -1 and buyFilters
+        buySignal     := true
+        lastSignalBar := bar_index
+
+// ═════════════════════════════════════════════════════════════
+//  OUTPUT
+// ═════════════════════════════════════════════════════════════
+plotshape(buySignal,  title="Long Entry",  location=location.belowbar, style=shape.labelup,   text="▲",  size=size.normal, color=color.new(color.teal, 0), textcolor=color.white)
+plotshape(sellSignal, title="Short Entry", location=location.abovebar, style=shape.labeldown, text="▼", size=size.normal, color=color.new(color.red, 0),  textcolor=color.white)
+
+alertcondition(buySignal,  title="Long Alert",  message="Vertex Pulse: Long Entry Detected")
+alertcondition(sellSignal, title="Short Alert", message="Vertex Pulse: Short Entry Detected")
+
+//Thanks to @muttanabby_ai for this TP SL logic from their script Fresh Algo | Signals and Overlays' https://www.tradingview.com/v/E4EqWNz4/
+
+// Colors
+green  = color.teal
+red    = color.red
+silver = #B2B5BE
+
+// ATR band & stop — direction driven by buySignal/sellSignal
+atrBand = usePercSL ? (buySignal ? low : high) * (percTrailingSL / 100) : ta.atr(14) * 2.2
+atrStop = buySignal ? low - atrBand : high + atrBand
+
+none = close > 0
+
+// Anchor TP/SL to the most recent buySignal or sellSignal bar
+lastTrade(src) => ta.valuewhen(buySignal or sellSignal, src, 0)
+
+// Capture direction at signal bar so TP multipliers flip correctly
+signalIsBull = ta.valuewhen(buySignal or sellSignal, buySignal, 0)
+
+entry_y = lastTrade(close)
+stop_y  = lastTrade(atrStop)
+
+// TP distance: positive for longs, negative for shorts
+tpDist  = entry_y - lastTrade(atrStop)   // negative for shorts (stop above entry)
+
+tp1_y = entry_y + tpDist * multTP1
+tp2_y = entry_y + tpDist * multTP2
+tp3_y = entry_y + tpDist * multTP3
+
+// TP/SL labels
+labelTpSl(cond, y, txt, color) =>
+    label labelTpSl = ShowTpSlAreas and cond ? label.new(bar_index + 1, y, txt, xloc.bar_index, yloc.price, color, label.style_label_left, color.white, size.normal) : na
+    label.delete(labelTpSl[1])
+
+labelTpSl(none, entry_y, "Entry : "      + str.tostring(math.round_to_mintick(entry_y)), color.orange)
+labelTpSl(none, stop_y,  "Stop loss : "  + str.tostring(math.round_to_mintick(stop_y)),  red)
+labelTpSl(useTP1 and multTP1 != 0, tp1_y, "TP 1 : " + str.tostring(math.round_to_mintick(tp1_y)), green)
+labelTpSl(useTP2 and multTP2 != 0, tp2_y, "TP 2 : " + str.tostring(math.round_to_mintick(tp2_y)), green)
+labelTpSl(useTP3 and multTP3 != 0, tp3_y, "TP 3 : " + str.tostring(math.round_to_mintick(tp3_y)), green)
+
+// TP/SL lines — bar count since signal for correct left anchor
+barsSinceSignal = bar_index - ta.valuewhen(buySignal or sellSignal, bar_index, 0)
+
+lineTpSl(cond, y, color, style) =>
+    line lineTpSl = ShowTpSlAreas and cond ? line.new(bar_index - barsSinceSignal, y, bar_index + 1, y, xloc.bar_index, extend.none, color, style) : na
+    line.delete(lineTpSl[1])
+
+lineTpSl(none, entry_y, color.orange, line.style_dashed)
+lineTpSl(none, stop_y,  red,    line.style_solid)
+lineTpSl(useTP1 and multTP1 != 0, tp1_y, green, line.style_dotted)
+lineTpSl(useTP2 and multTP2 != 0, tp2_y, green, line.style_dotted)
+lineTpSl(useTP3 and multTP3 != 0, tp3_y, green, line.style_dotted)
