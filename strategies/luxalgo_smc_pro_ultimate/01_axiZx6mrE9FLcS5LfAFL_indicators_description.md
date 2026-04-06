@@ -3,112 +3,105 @@
 
 ### 1. Component Deconstruction
 
-This analysis deconstructs the script's components based on their default input configurations.
+This section provides a granular analysis of each mathematical and logical component used in the script's engine.
 
-#### **A. Core Indicators & Oscillators**
+#### **Core Indicators & Studies**
 
 *   **Average True Range (ATR)**
-    *   **Specific Configuration:** `ta.atr(atrLen)` with `atrLen` = 9. The price source is the default for `atr`, which is a smoothed average of True Range (`math.max(high - low, math.abs(high - close[1]), math.abs(low - close[1]))`).
-    *   **Functional Modification:** Standard implementation. Used exclusively for risk management to calculate stop-loss placement.
+    *   **Specific Configuration:** `ta.atr(atrLen)` with a default `atrLen` of `9`.
+    *   **Functional Modification:** Standard implementation. It calculates the average volatility over the last 9 periods. Its primary function is to dynamically size the stop-loss distance based on recent market volatility.
 
-*   **Simple Moving Average (SMA)**
-    *   **Specific Configuration:** `ta.sma(volume, 20)`. A 20-period SMA is calculated on `volume`.
-    *   **Functional Modification:** Standard implementation. It serves as a baseline or "average volume" threshold for the Signal Ranking engine.
+*   **Simple Moving Average (SMA) of Volume**
+    *   **Specific Configuration:** `ta.sma(volume, 20)`.
+    *   **Functional Modification:** Standard implementation. It computes a 20-period SMA of volume, establishing a baseline for "average" volume. This is used as a benchmark to identify high-volume, high-conviction trigger candles.
 
 *   **Relative Strength Index (RSI)**
-    *   **Specific Configuration:** `ta.rsi(close, 14)`. A standard 14-period RSI calculated on the `close` price.
-    *   **Functional Modification:** Standard implementation. It is not used for overbought/oversold conditions but exclusively for detecting price-momentum divergence as an optional confirmation filter.
+    *   **Specific Configuration:** `ta.rsi(close, 14)`.
+    *   **Functional Modification:** Standard 14-period RSI based on `close` price. It is not used as a primary trigger but as an optional filter to detect price-momentum divergences.
 
 *   **Exponential Moving Average (EMA)**
-    *   **Specific Configuration:** `ta.ema(close, 200)`. A standard 200-period EMA calculated on the `close` price.
-    *   **Functional Modification:** Standard implementation. It is not part of the primary entry logic. It is used post-trade within the "Confluence Meter" to score the trend alignment of an open position.
+    *   **Specific Configuration:** `ta.ema(close, 200)`.
+    *   **Functional Modification:** Standard 200-period EMA. It is not part of the entry logic but is used post-entry within the "Confluence Meter" to score the trade's alignment with the long-term trend.
 
 *   **Bollinger Bands (BB)**
-    *   **Specific Configuration:** `ta.bb(close, 20, 2.0)`. A standard 20-period Bollinger Band with a 2.0 standard deviation multiplier, calculated on the `close` price.
-    *   **Functional Modification:** The script only extracts the middle band (`bbMid`), which is a 20-period SMA. The upper and lower bands are discarded. This component is effectively used as a 20-period SMA to act as a short-term momentum filter.
+    *   **Specific Configuration:** `ta.bb(close, 20, 2.0)`.
+    *   **Functional Modification:** The script exclusively extracts the middle band (`bbMid`), which is a 20-period SMA of the `close` price. The upper and lower bands are discarded. This component serves as an optional, short-term trend filter.
 
-#### **B. Custom Mathematical & Logical Constructs**
+#### **Custom-Engineered Components**
 
-*   **Premium & Discount Zones**
-    *   **Specific Configuration:** `pdLookback` = 100.
-    *   **Mathematical Logic:**
-        1.  `rangeHigh = ta.highest(high, 100)`
-        2.  `rangeLow = ta.lowest(low, 100)`
-        3.  `equilibrium = (rangeHigh + rangeLow) / 2`
-        The engine defines a trading range based on the highest high and lowest low over the last 100 bars. The midpoint of this range is the "Equilibrium". Any price below this midpoint is in a "Discount" zone, and any price above is in a "Premium" zone. This is a direct implementation of a core SMC concept.
+*   **Premium & Discount (PD) Zones**
+    *   **Specific Configuration:** Utilizes a `pdLookback` of `100` periods. It identifies the `highest(high)` and `lowest(low)` over this lookback period.
+    *   **Functional Modification:** This is a custom calculation that defines a trading range.
+        *   `rangeHigh = ta.highest(high, 100)`
+        *   `rangeLow = ta.lowest(low, 100)`
+        *   `equilibrium = (rangeHigh + rangeLow) / 2`
+        *   The engine defines a "Discount" zone as any price below the `equilibrium` and a "Premium" zone as any price above it. This is a non-standard, range-based value filter derived from Smart Money Concepts.
 
-*   **Fair Value Gaps (FVG)**
-    *   **Specific Configuration:** This is a hard-coded 3-bar pattern recognition algorithm.
-    *   **Mathematical Logic:**
-        *   **Bullish FVG (`bFVG`):** `low > high[2] and close[1] > high[2]`. This identifies a gap where the current bar's low is higher than the high of two bars prior, and the previous bar's close confirms this separation.
-        *   **Bearish FVG (`sFVG`):** `high < low[2] and close[1] < low[2]`. This identifies a gap where the current bar's high is lower than the low of two bars prior, with the previous close confirming the gap.
-        This is a simplified but effective FVG detection method.
+*   **Market Structure Shift (MSS) Engine**
+    *   **Specific Configuration:** Employs two distinct lookback periods: `internalLookback` (default `9`) and `swingLookback` (default `50`).
+    *   **Functional Modification:** This is a custom-built pivot detection and break-of-structure engine.
+        1.  **Pivot Identification:** It identifies swing points using the logic `high[N] == ta.highest(high, N * 2 + 1)`, where `N` is the lookback. This confirms a candle's high is the absolute highest in a window of `2N+1` bars. A similar logic applies to swing lows.
+        2.  **State-Holding:** It uses `var` variables (`lastISH`, `lastISL`, `lastSSH`, `lastSSL`) to store the price level of the *most recent* valid swing high or low.
+        3.  **Shift Detection:** The core "shift" signal (`mssL` or `mssS`) is generated when the `close` price executes a `ta.crossover` or `ta.crossunder` of these stored swing point levels. The `structureMode` input determines whether to use the faster "Internal" structure, the slower "Swing" structure, or both.
 
-*   **Market Structure (MSS/BOS/CHoCH)**
-    *   **Specific Configuration:** `internalLookback` = 9, `swingLookback` = 50.
-    *   **Mathematical Logic:**
-        1.  **Pivot Detection:** The script identifies pivot points (swing highs/lows) using a standard method: `high[lookback] == ta.highest(high, lookback * 2 + 1)`. A bar is a pivot if its high/low is the highest/lowest within a window of `lookback * 2 + 1` bars centered on it.
-        2.  **State Persistence:** The price levels of the most recent "Internal" and "Swing" pivots (`lastISH`, `lastISL`, `lastSSH`, `lastSSL`) are stored using `var` variables, persisting their values across bars until a new pivot is formed.
-        3.  **Structure Break:** A Market Structure Shift (`mssL` or `mssS`) is defined not by the formation of a new pivot, but by the `close` price crossing over a previous swing high (`lastISH`/`lastSSH`) or crossing under a previous swing low (`lastISL`/`lastSSL`). This transforms the pivot levels into dynamic support/resistance lines that trigger the primary signal upon being broken.
+*   **Fair Value Gap (FVG) Detector**
+    *   **Specific Configuration:** This is a fixed 3-bar pattern recognition module.
+    *   **Functional Modification:** It uses pure boolean logic to identify price inefficiencies.
+        *   **Bullish FVG (`bFVG`):** `low > high[2]`. This identifies a gap between the current bar's low and the high from two bars prior. The condition `close[1] > high[2]` is an additional qualifier, ensuring the middle candle of the pattern showed strength.
+        *   **Bearish FVG (`sFVG`):** `high < low[2]`. This identifies a gap between the current bar's high and the low from two bars prior. The condition `close[1] < low[2]` adds a similar confirmation for bearish momentum.
 
-*   **Volume Momentum & Signal Ranking**
-    *   **Specific Configuration:** `volMult` = 1.2, `volCandles` = 3.
-    *   **Mathematical Logic:**
-        1.  **Strength Check:** `isStrong` is true if `volume > volAvg * 1.2`. The current bar's volume must be at least 20% greater than the 20-period average volume.
-        2.  **Momentum Check:** The `volIncreasing` flag is derived from a `for` loop. For this flag to remain `true`, the condition `volume[i] < volume[i+1]` must be `false` for `i` from 0 to 2. This means `volume[0] >= volume[1]` AND `volume[1] >= volume[2]`. The logic checks for a **monotonically non-increasing** volume profile over the last 3 bars. This is counter-intuitive to the variable name and likely a logical error; the intent was probably to check for `volume[i] > volume[i+1]`. As written, it rewards decreasing volume.
+*   **Volume Momentum Check**
+    *   **Specific Configuration:** Iterates over the last `volCandles` (default `3`).
+    *   **Functional Modification:** This is a custom loop designed to validate volume strength. The variable `volIncreasing` remains `true` only if for the last 3 bars, `volume[i] >= volume[i+1]`. This confirms a pattern of non-decreasing volume leading into the trigger candle, indicating building momentum.
 
 ### 2. Logic Layering & Confluence
 
-The script's engine is built on a hierarchical filtering system where a primary event must occur before subsequent confirmation filters are checked.
+The script's engine is built on a hierarchical filtering model where a primary signal is qualified by a series of subsequent conditions.
 
-*   **Hierarchical Filtering:**
-    1.  **Gatekeeper:** The **Market Structure Shift (MSS)** is the non-negotiable, primary catalyst. The boolean variables `mssL` (for long) and `mssS` (for short) must be `true` for the logic chain to proceed. Without a structural break of a prior pivot, no signal can be generated.
-    2.  **Value Filter:** The **Premium & Discount Zone** acts as the second layer. If enabled (`requirePDZone = true`), a bullish MSS is only considered valid if the `close` is in a `Discount` zone. A bearish MSS is only valid if the `close` is in a `Premium` zone. This enforces the discipline of "buy low, sell high" relative to the 100-bar range.
-    3.  **Precision & Confirmation Filters:** The remaining conditions are layered as optional "AND" clauses. They serve to increase the signal's specificity:
-        *   **FVG Presence:** Requires the MSS and pullback to occur in the context of a price inefficiency.
-        *   **Divergence:** Adds a classic momentum-based confirmation.
-        *   **BB Filter:** Ensures the entry aligns with short-term momentum (price above the 20 SMA for longs).
+*   **Hierarchical Filtering:** The logic operates as a sequential gatekeeping system.
+    1.  **Primary Gatekeeper (The Event):** The **Market Structure Shift (MSS)** is the foundational trigger. No signal can be generated without a `mssL` (for longs) or `mssS` (for shorts) event occurring first. This is the script's core signal for a change in order flow.
+    2.  **Secondary Gatekeeper (The Location):** The **Premium & Discount Zone** acts as the next filter. If `requirePDZone` is enabled, a bullish MSS is only considered valid if it occurs while the price is `inDiscount`. A bearish MSS is only valid if it occurs `inPremium`. This layer filters out trades in "expensive" areas, enforcing a "buy low, sell high" discipline.
+    3.  **Tertiary Gatekeepers (The Catalysts):** Several optional filters provide final confirmation, creating a high-degree of confluence. These are all conjunctive (`AND`) conditions.
+        *   **FVG Filter:** If `useFVGConfluence` is enabled, the MSS must occur concurrently with or one bar after a **Fair Value Gap**. This adds a liquidity-based rationale for the price move.
+        *   **Divergence Filter:** If `useDivFilter` is enabled, a classic **RSI Divergence** must be present, signaling underlying momentum exhaustion of the prior micro-trend.
+        *   **BB Filter:** If `useBBFilter` is enabled, the price must be above the 20-period SMA for longs (`close > bbMid`) or below it for shorts, acting as a simple trend-momentum check.
 
-*   **Interaction Dynamics:**
-    *   **Threshold Cross:** The core of the system is the `ta.crossover` / `ta.crossunder` of the `close` price with a stored pivot level. This is a classic threshold-crossing trigger.
-    *   **State-Based Filtering:** Following the trigger, the system checks the *state* of the market (e.g., `inDiscount`, `bFVG`). It is not looking for multiple indicators to move in unison (Convergence), but for a specific sequence of events: **Break -> Pullback to Value Zone -> Confirmation**.
+*   **Interaction Dynamics:** The primary dynamic is **Confluence**. The engine is not looking for divergence between indicators as a primary signal (unless the optional filter is on), but rather for a convergence of conditions: a structural break (`MSS`) happening in a value location (`PD Zone`) with a potential liquidity reason (`FVG`). Each enabled filter systematically increases the specificity of the setup, thereby aiming to improve the signal-to-noise ratio at the cost of signal frequency.
 
 ### 3. The Execution Engine
 
-#### **A. Trigger Conditions**
+This section defines the precise boolean logic and mathematical constants that govern trade entry and risk management.
 
-The final trade signal is a boolean composite of the layered logic.
+#### **Trigger Conditions**
 
-*   **Boolean Logic for a Long Entry (`bTrigger`):**
-    A long signal is generated (`bTrigger = true`) on a bar IF ALL of the following are met:
-    1.  A bullish Market Structure Shift has occurred (`mssL`).
-    2.  **AND** the Premium/Discount filter is disabled **OR** the `close` price is in the Discount zone.
-    3.  **AND** the FVG filter is disabled **OR** a bullish FVG was present on the current or preceding bar.
-    4.  **AND** the Divergence filter is disabled **OR** a bullish RSI divergence is present.
-    5.  **AND** the Bollinger Band filter is disabled **OR** the `close` is above the 20-period middle band.
+*   **Long Entry (`bTrigger`):** A long signal is `true` if and only if all the following conditions are met:
+    1.  `mssL` is true (a bullish Market Structure Shift has occurred).
+    2.  AND (`requirePDZone` is false OR `inDiscount` is true).
+    3.  AND (`useFVGConfluence` is false OR a bullish FVG exists on the current or prior bar).
+    4.  AND (`useDivFilter` is false OR `bullDiv` is true).
+    5.  AND (`useBBFilter` is false OR `close > bbMid`).
+    6.  AND `strategy.position_size == 0` (no existing position).
+    7.  AND `tradeDirection` is "Both" or "Long Only".
 
-*   **Boolean Logic for a Short Entry (`sTrigger`):**
-    A short signal is generated (`sTrigger = true`) on a bar IF ALL of the following are met:
-    1.  A bearish Market Structure Shift has occurred (`mssS`).
-    2.  **AND** the Premium/Discount filter is disabled **OR** the `close` price is in the Premium zone.
-    3.  **AND** the FVG filter is disabled **OR** a bearish FVG was present on the current or preceding bar.
-    4.  **AND** the Divergence filter is disabled **OR** a bearish RSI divergence is present.
-    5.  **AND** the Bollinger Band filter is disabled **OR** the `close` is below the 20-period middle band.
+*   **Short Entry (`sTrigger`):** A short signal is `true` if and only if all the following conditions are met:
+    1.  `mssS` is true (a bearish Market Structure Shift has occurred).
+    2.  AND (`requirePDZone` is false OR `inPremium` is true).
+    3.  AND (`useFVGConfluence` is false OR a bearish FVG exists on the current or prior bar).
+    4.  AND (`useDivFilter` is false OR `bearDiv` is true).
+    5.  AND (`useBBFilter` is false OR `close < bbMid`).
+    6.  AND `strategy.position_size == 0` (no existing position).
+    7.  AND `tradeDirection` is "Both" or "Short Only".
 
-#### **B. Exit Conditions & Mathematical Constants**
+#### **Risk & Trade Management Mechanics**
 
-*   **Initial Stop Loss:**
-    *   **Mathematical Constant:** `atrMult = 3.0`.
-    *   **Logic:** The initial stop loss is placed a distance of `3.0 * ta.atr(9)` away from the entry bar's price (below the low for longs, above the high for shorts). This wide multiplier indicates a strategy designed to withstand significant volatility and aims for larger price swings, prioritizing a lower frequency of being stopped out over a tight risk definition.
+*   **Mathematical Constants:**
+    *   **`atrMult = 3.0`:** This multiplier defines the stop-loss width. The stop is placed `3.0 * ATR` away from the trigger bar's low (for longs) or high (for shorts). This relatively large multiplier creates a wide, volatility-adjusted stop designed to withstand market noise.
+    *   **`tp1RR = 1.5`:** This constant sets the first take-profit target at a fixed **1.5:1 Risk-to-Reward ratio**. The profit target distance is calculated as `1.5 * (entry_price - stop_loss_price)`.
+    *   **`volMult = 1.2`:** A trigger candle is classified as "STRONG" if its volume is greater than 120% of the 20-period volume SMA, adding a layer of volume confirmation.
 
-*   **Take Profit 1 (TP1):**
-    *   **Mathematical Constant:** `tp1RR = 1.5`.
-    *   **Logic:** The first take profit target is calculated to be `1.5` times the initial risk. `TP1_Distance = Initial_Risk_Distance * 1.5`. Upon hitting TP1, 50% of the position is closed, and the stop loss is moved to the entry price (breakeven). This systematically de-risks the trade after a favorable move.
-
-*   **Trailing Stop Loss:**
-    *   **Logic:** After TP1 is hit, the stop loss begins to trail the price. For a long position, the stop is continuously updated to `low - (atr * atrMult)` if this new value is higher than the current stop loss (which is at breakeven). This creates a one-way trailing stop that only moves in the direction of the trade to lock in profits.
-
-*   **Signal Decay:**
-    *   **Mathematical Constant:** `decayRate = 2`.
-    *   **Logic:** Used in the visual "Confluence Meter", this constant reduces the trade's score by 2 points for every bar it remains open. This mathematically quantifies the concept of "time risk," penalizing trades that fail to achieve their objective promptly.
+*   **Exit Logic & Position Management:**
+    1.  **Initial Stop:** An ATR-based stop is placed immediately upon entry.
+    2.  **Partial Profit-Taking:** Upon reaching the `1.5R` target (`tp1`), the strategy exits **50%** of the position.
+    3.  **Stop to Breakeven:** Critically, after the first partial profit is taken, the stop-loss for the remaining position is moved to the average entry price (`strategy.position_avg_price`). This immediately removes risk from the remainder of the trade.
+    4.  **Trailing Stop:** After moving to breakeven, the stop-loss becomes a trailing stop. On each new bar, it is recalculated as `low - (atr * atrMult)` for longs. If this new value is higher than the current stop-loss (which is at breakeven or higher), the stop is trailed up, locking in profit while allowing the remainder of the position to run.
     

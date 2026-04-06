@@ -5,152 +5,185 @@ Here is the architectural breakdown for transforming the "LuxAlgo SMC Pro Ultima
 
 ---
 
-The provided script, while labeled a `strategy`, operates more like a conceptual backtest. Its position sizing is naive, its exit logic is basic, and its order execution model doesn't reflect real-world market conditions. To elevate this to a professional automated system, we must overhaul its core execution, risk, and trade management engines.
+The provided script is a well-structured `strategy` that incorporates several popular Smart Money Concepts (SMC). However, its execution logic, risk management, and exit handling are characteristic of a backtesting model rather than a robust, live trading engine. The following overhaul focuses on introducing the realities of execution friction, dynamic risk control, and sophisticated trade management.
 
 ### 1. Execution Triggers (Entry & Direction)
 
-The core logic relies on a Market Structure Shift (MSS) confirmed by a confluence of optional filters. We will refine the execution of these triggers for production.
+The core logic for identifying a trade setup is sound, but its translation into an executable order needs refinement.
 
-*   **Long Entry Condition:** A `bTrigger` becomes `true` when:
-    1.  **Primary Signal:** A Market Structure Shift to the upside occurs (`mssL`). This happens when the price closes above a recently formed swing high or internal high.
-    2.  **Confluence Filters (if enabled):**
-        *   **Premium/Discount:** The price is in a "Discount" zone (below the 50% level of the `pdLookback` range).
-        *   **Fair Value Gap (FVG):** A bullish FVG has formed on the current or previous bar.
-        *   **Divergence:** A bullish RSI divergence is present.
-        *   **Trend Filter:** The price is above the Bollinger Band basis line.
+*   **Long Entry Condition:**
+    ```pine
+    // A Market Structure Shift (MSS) to the upside has occurred.
+    // AND the price is in a Discount zone (optional).
+    // AND a bullish Fair Value Gap (FVG) is present (optional).
+    // AND other optional filters (Divergence, BB) are met.
+    bool longCondition = mssL and (not requirePDZone or inDiscount) and (not useFVGConfluence or bFVG[1] or bFVG) and (not useDivFilter or bullDiv) and (not useBBFilter or close > bbMid)
+    ```
 
-*   **Short Entry Condition:** A `sTrigger` becomes `true` when:
-    1.  **Primary Signal:** A Market Structure Shift to the downside occurs (`mssS`). This happens when the price closes below a recently formed swing low or internal low.
-    2.  **Confluence Filters (if enabled):**
-        *   **Premium/Discount:** The price is in a "Premium" zone (above the 50% level of the `pdLookback` range).
-        *   **Fair Value Gap (FVG):** A bearish FVG has formed on the current or previous bar.
-        *   **Divergence:** A bearish RSI divergence is present.
-        *   **Trend Filter:** The price is below the Bollinger Band basis line.
+*   **Short Entry Condition:**
+    ```pine
+    // A Market Structure Shift (MSS) to the downside has occurred.
+    // AND the price is in a Premium zone (optional).
+    // AND a bearish Fair Value Gap (FVG) is present (optional).
+    // AND other optional filters (Divergence, BB) are met.
+    bool shortCondition = mssS and (not requirePDZone or inPremium) and (not useFVGConfluence or sFVG[1] or sFVG) and (not useDivFilter or bearDiv) and (not useBBFilter or close < bbMid)
+    ```
 
 #### Execution Nuances
 
-*   **Execution Timing:** The original script implicitly executes on the **open of the next bar**. This is unrealistic and introduces lookahead bias. A professional system must execute based on information available at the time of the decision.
-    *   **Solution:** We will set `process_orders_on_close = true` in the `strategy` declaration. This ensures that if a signal (`bTrigger` or `sTrigger`) is confirmed at the close of Bar `X`, the market order is filled at the closing price of Bar `X`, providing a more realistic backtest. In a live environment, this translates to sending a market order the instant the bar closes.
+*   **Execution Timing:** The original script executes on the open of the next bar after a signal (`strategy.entry`). This creates a discrepancy between the signal price (previous close) and the fill price. For a production system, we must be explicit:
+    *   **Decision:** We will trigger the trade **on the close of the signal bar**.
+    *   **Implementation:** Instead of `strategy.entry`, we will use `strategy.order` to send a market order as the bar is closing. This minimizes slippage compared to waiting for the next bar's open, providing a fill price closer to the `close` where the decision was made. This requires setting `calc_on_bar_close=true` in the `strategy` declaration.
 
-*   **Signal Reversals:** The original script explicitly prevents entering a new trade while one is active (`strategy.position_size == 0`). This is too restrictive. A strong bearish signal should be able to close an existing long position and initiate a new short.
-    *   **Solution:** We will implement logic to handle reversals. If a `sTrigger` occurs while `strategy.position_size > 0`, the system will first execute `strategy.close("Long")` and then immediately execute `strategy.entry("Short")`. This ensures a clean flip and accurate accounting.
+*   **Signal Reversals:** The original script's `if strategy.position_size == 0` clause prevents it from acting on a new signal while in a trade. A professional system cannot afford to be "stuck" in a losing trade when a high-probability reversal signal appears.
+    *   **Logic:** If a `shortCondition` becomes true while the strategy is in a long position, the system must first close the long position with a market order and then immediately open a new short position. The same applies in reverse. This ensures the system is always aligned with the most recent valid signal.
 
 ### 2. Multi-Tiered Exit Logic
 
-A single TP/SL system is brittle. A robust framework layers multiple exit conditions to adapt to market behavior.
+A static "one-and-done" exit strategy is fragile. A professional framework layers multiple exit conditions to adapt to changing market dynamics.
 
-*   **Initial Stop Loss:** The use of an ATR multiplier is a solid foundation. We will refine it to be placed relative to the structure that triggered the trade, not just the bar's low/high.
-    *   **Longs:** The stop loss will be placed at `low[trigger_bar] - (atr * atrMult)`. This anchors the risk to the actual pivot or candle that generated the signal.
-    *   **Shorts:** The stop loss will be placed at `high[trigger_bar] + (atr * atrMult)`.
+*   **Initial Stop Loss (Volatility-Based):** The script's use of an ATR-based stop is excellent. We will retain this as the foundation.
+    *   **Long SL:** `entry_price - (ta.atr(atrLen) * atrMult)`
+    *   **Short SL:** `entry_price + (ta.atr(atrLen) * atrMult)`
+    This stop is calculated *once* at entry and placed immediately with the entry order.
 
-*   **Take Profit / Trailing Mechanism:** We will replace the single TP and move-to-breakeven logic with a more dynamic, multi-stage approach.
-    1.  **TP1 (Scaling Out):** At a 1.5R profit target, close **50%** of the position. This secures initial profit and de-risks the trade.
-    2.  **Move to Breakeven:** *After* TP1 is hit, the stop loss for the remaining 50% of the position is moved to the entry price. This is a conservative approach.
-    3.  **TP2 / Trailing Stop:** For the remaining position, we will not use a fixed second target. Instead, we will employ a more intelligent trailing stop to capture the majority of the trend. A **Chandelier Exit** is ideal here:
-        *   **Long Trail:** The stop will trail at `ta.highest(high, 22) - (atr * atrMult)`. It trails below the highest high over the last `N` bars, giving the trend room to make pullbacks without stopping out prematurely.
-        *   **Short Trail:** The stop will trail at `ta.lowest(low, 22) + (atr * atrMult)`.
+*   **Take Profit / Trailing Mechanism:** The original script moves to breakeven after TP1. We will enhance this with a multi-stage, dynamic approach.
+    1.  **TP1 (Scaling Out):** At a predefined Risk:Reward ratio (e.g., `1.5R`), close **50%** of the position.
+    2.  **Move to Breakeven+:** Upon the TP1 fill, move the stop loss for the remaining 50% of the position to `entry_price`. This secures the trade against becoming a loser.
+    3.  **Dynamic Trailing Stop:** For the remaining position, activate a trailing stop. Instead of the original script's ATR trail, we will use a more responsive method like trailing behind the low/high of the last `N` bars or using a fast-moving average (e.g., 10-period EMA). This allows the trade to capture a larger trend while still protecting profits.
+        *   **Example (Long):** `Trail_Stop = ta.lowest(low, 10)[1]`. The `[1]` ensures the stop is based on a completed bar, preventing intra-bar stop-outs from a sudden wick.
 
 *   **Time-Based Exits:** Capital should not be held hostage by stagnant trades.
-    *   **Stagnation Exit:** If a position has been open for `X` bars (e.g., 50 bars) and has not yet hit TP1, exit the trade at market. This frees up capital for higher-probability opportunities.
-    *   **End-of-Session Exit:** For intraday timeframes, an "End of Day" (EOD) exit is non-negotiable to manage overnight risk. The system will be configured to close any open position 15 minutes before the session close.
+    *   **Stagnation Exit:** If a trade has been open for `X` bars (e.g., 50 bars) and has not yet hit TP1, exit the position at market. This frees up capital for new opportunities.
+    *   **End-of-Session Exit:** For non-24/7 markets (like equities or futures), all open positions must be squared off before the session close to avoid overnight risk. This is a non-negotiable rule for most day trading systems.
+        *   **Logic:** `if (time_close - time) < (15 * 60 * 1000)` // If less than 15 mins to session close
+        `strategy.close_all()`
 
 ### 3. Capital Allocation & Risk Management
 
-This is the most critical overhaul. The original script's `strategy.percent_of_equity` sizing is fundamentally flawed as it ignores the trade-specific risk (stop distance).
+This is the most critical transformation from a "toy" to a professional tool. The `default_qty_value = 10` (10% of equity) is a dangerously blunt instrument that ignores trade-specific risk.
 
-*   **Risk-Based Sizing:** We will implement a function to risk a fixed percentage of account equity on every single trade, regardless of the stop-loss distance.
-    *   **Rule:** Risk exactly `1%` of `strategy.equity` per trade.
-    *   **Calculation:**
-        1.  `riskAmount = strategy.equity * riskPercent` (e.g., $10,000 * 0.01 = $100)
-        2.  `riskPerUnit = abs(entry_price - stop_loss_price)`
-        3.  `positionSize = riskAmount / riskPerUnit`
-    *   This ensures that whether the stop is 10 points away or 100 points away, the maximum potential loss on the trade is always the same ($100 in this example).
+*   **Risk-Based Sizing:** We will risk a fixed percentage of account equity on *every single trade*. The position size will be a function of the distance to the initial stop loss.
+    *   **Inputs:**
+        *   `accountEquity = strategy.equity`
+        *   `riskPerTrade = 0.01` (i.e., 1%)
+    *   **Calculation (Long):**
+        1.  `riskAmount = accountEquity * riskPerTrade`
+        2.  `stopLossPrice = entryPrice - (atr * atrMult)`
+        3.  `riskPerUnit = entryPrice - stopLossPrice`
+        4.  `positionSize = riskAmount / riskPerUnit`
+    *   This formula ensures that whether the stop loss is 10 points away or 100 points away, the maximum potential loss on the trade remains the same (1% of equity).
 
 *   **Pyramiding & Scaling:**
-    *   **Scaling Out:** This is handled by our multi-tiered exit logic (50% at TP1).
-    *   **Pyramiding (Adding to Winners):** We will establish strict rules for adding to a position. This is an advanced feature and should be used with caution.
-        *   **Condition:** A new position can only be added if the original trade is in profit by at least 1.5R (i.e., TP1 has been hit and the stop is at breakeven).
-        *   **Signal:** A new, valid entry signal (`bTrigger` or `sTrigger`) must occur on a pullback (e.g., a new FVG is formed and tested).
-        *   **Risk:** The new position will be sized to risk `0.5%` of current equity. The total risk exposure across all open positions on a single asset should not exceed the initial max risk (e.g., 1.5%).
+    *   **Scaling In (Pyramiding):** The current script is disabled from pyramiding. A professional enhancement would be to add a rule for adding to a winning position.
+        *   **Rule:** If the initial position is profitable and a *new, valid structure break* occurs in the same direction, a second, smaller position (e.g., 50% of the initial risk) can be added. The stop loss for the entire combined position would then be moved to the breakeven point of the *new average entry price*. This is an advanced technique that should be implemented with caution.
+    *   **Scaling Out:** The proposed multi-stage TP logic already incorporates scaling out, which is a core tenet of professional trade management.
 
 ### 4. Implementation Snippet (Pine Logic)
 
-This snippet demonstrates the transition to a professional `strategy` call, incorporating the principles of realistic friction, risk-based sizing, and multi-stage exits.
+This snippet demonstrates the architectural shift, focusing on the `strategy` declaration and the execution block. It replaces the original script's entry/management logic with a more robust structure.
 
 ```pine
-// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// This is a conceptual snippet, not a full, runnable script.
+// It showcases the transition to a professional execution framework.
+
 //@version=5
-
-// --- 1. STRATEGY DECLARATION: PRODUCTION-GRADE ---
-strategy("SMC Pro - Execution Framework", 
+// 1. STRATEGY DECLARATION: Professional settings
+strategy("SMC Pro Execution Engine", 
      overlay=true, 
-     process_orders_on_close=true, // Execute on bar close for realism
-     initial_capital=10000,
-     commission_type=strategy.commission.percent,
-     commission_value=0.075, // Realistic broker commission
-     slippage=2) // Realistic slippage in ticks
+     calc_on_bar_close=true, // Crucial for executing on the bar's close
+     process_orders_on_close=true, // Ensures orders are processed before the next bar
+     slippage=2, // Realistic slippage in ticks
+     commission_type=strategy.commission.percent, 
+     commission_value=0.075) // Realistic commission
 
-// --- 2. RISK MANAGEMENT INPUTS ---
-riskPercent = input.float(1.0, "Risk Per Trade %", minval=0.1, maxval=5.0, step=0.1) / 100
-allowReversals = input.bool(true, "Allow Position Reversals?")
-stagnationBars = input.int(50, "Max Bars in Trade Before Exit")
+// --- INPUTS ---
+// Risk Management
+riskPercent = input.float(1.0, "Risk Per Trade (%)", minval=0.1, maxval=5.0) / 100
+// Exit Management
+tp1RR = input.float(1.5, "TP1 Risk:Reward")
+stagnationBars = input.int(50, "Max Bars in Trade")
+eodHour = input.int(15, "End of Day Hour (24h format)")
+eodMinute = input.int(45, "End of Day Minute")
 
-// --- [Original Script's Core Calculations: mssL, mssS, bTrigger, sTrigger, etc.] ---
-// ... (Assume all the indicator logic from the original script is here)
+// --- CORE LOGIC (Assume bTrigger & sTrigger are calculated as in the original script) ---
+// ... mssL, mssS, bTrigger, sTrigger calculations ...
+float atr = ta.atr(14)
+float atrMult = 3.0
 
-// --- 3. DYNAMIC POSITION SIZING & EXECUTION ---
-var float entryPrice = na
-var float stopLossPrice = na
-var int entryBar = na
+// --- RISK CALCULATION ---
+f_calculatePositionSize(entryPrice, slPrice) =>
+    riskAmount = strategy.equity * riskPercent
+    riskPerUnit = math.abs(entryPrice - slPrice)
+    positionSize = riskPerUnit > 0 ? riskAmount / riskPerUnit : 0
+    positionSize
 
-// Calculate Position Size based on fixed-fractional risk
-riskAmount = strategy.equity * riskPercent
-riskPerUnit = bTrigger ? (close - (low - atr * atrMult)) : sTrigger ? ((high + atr * atrMult) - close) : na
-positionSize = riskPerUnit > 0 ? riskAmount / (riskPerUnit * syminfo.pointvalue) : 0
+// --- EXECUTION & MANAGEMENT BLOCK ---
+var int entryBarIndex = na
 
-// --- ENTRY LOGIC ---
-// Handle Long Entry
+// Time-based Exit Logic
+isEod = (hour(time_close) == eodHour and minute(time_close) >= eodMinute)
+if isEod
+    strategy.close_all(comment="EOD Exit")
+
+// Stagnation Exit Logic
+if strategy.position_size != 0 and bar_index - entryBarIndex > stagnationBars
+    strategy.close_all(comment="Stagnation Exit")
+
+// ENTRY LOGIC
+// Handle Long Entry / Short Reversal
 if (bTrigger)
-    if (strategy.position_size < 0 and allowReversals)
+    // If currently short, close the position first
+    if strategy.position_size < 0
         strategy.close("Short", comment="Reversal to Long")
-    if (strategy.position_size == 0)
-        entryPrice := close
-        stopLossPrice := low - (atr * atrMult)
-        entryBar := bar_index
-        strategy.entry("Long", strategy.long, qty=positionSize, comment="SMC Long Entry")
 
-// Handle Short Entry
+    // Only enter if flat (or after reversal close)
+    if strategy.position_size == 0
+        entryPrice = close
+        slPrice = entryPrice - (atr * atrMult)
+        tp1Price = entryPrice + (math.abs(entryPrice - slPrice) * tp1RR)
+        
+        posSize = f_calculatePositionSize(entryPrice, slPrice)
+
+        if posSize > 0
+            strategy.entry("Long", strategy.long, qty=posSize, comment="Entry Long")
+            // Place a multi-leg exit order immediately
+            strategy.exit("Exit Long", "Long", stop=slPrice, limit=tp1Price, qty_percent=50, comment_profit="TP1 Hit", comment_loss="SL Hit")
+            entryBarIndex := bar_index
+
+// Handle Short Entry / Long Reversal
 if (sTrigger)
-    if (strategy.position_size > 0 and allowReversals)
+    // If currently long, close the position first
+    if strategy.position_size > 0
         strategy.close("Long", comment="Reversal to Short")
-    if (strategy.position_size == 0)
-        entryPrice := close
-        stopLossPrice := high + (atr * atrMult)
-        entryBar := bar_index
-        strategy.entry("Short", strategy.short, qty=positionSize, comment="SMC Short Entry")
 
-// --- 4. MULTI-TIERED EXIT LOGIC ---
-if (strategy.position_size != 0)
-    // A. Define TP and Trail levels
-    tp1Price = strategy.position_size > 0 ? entryPrice + (entryPrice - stopLossPrice) * tp1RR : entryPrice - (stopLossPrice - entryPrice) * tp1RR
-    trailStopPrice = strategy.position_size > 0 ? ta.highest(high, 22) - (atr * atrMult) : ta.lowest(low, 22) + (atr * atrMult)
+    // Only enter if flat (or after reversal close)
+    if strategy.position_size == 0
+        entryPrice = close
+        slPrice = entryPrice + (atr * atrMult)
+        tp1Price = entryPrice - (math.abs(entryPrice - slPrice) * tp1RR)
 
-    // B. Execute Exits with unique IDs for clarity
-    // TP1: Scale out 50%
-    strategy.exit("TP1", from_entry=strategy.position_size > 0 ? "Long" : "Short", qty_percent=50, limit=tp1Price)
-    
-    // After TP1, move SL to Breakeven for the rest
-    isTp1Hit = strategy.closedtrades.exit_comment(strategy.closedtrades - 1) == "TP1"
-    breakevenStop = isTp1Hit ? entryPrice : stopLossPrice
+        posSize = f_calculatePositionSize(entryPrice, slPrice)
 
-    // Trailing Stop for the remaining position
-    finalStopPrice = strategy.position_size > 0 ? math.max(breakevenStop, trailStopPrice) : math.min(breakevenStop, trailStopPrice)
-    strategy.exit("TrailSL", from_entry=strategy.position_size > 0 ? "Long" : "Short", stop=finalStopPrice)
+        if posSize > 0
+            strategy.entry("Short", strategy.short, qty=posSize, comment="Entry Short")
+            // Place a multi-leg exit order immediately
+            strategy.exit("Exit Short", "Short", stop=slPrice, limit=tp1Price, qty_percent=50, comment_profit="TP1 Hit", comment_loss="SL Hit")
+            entryBarIndex := bar_index
 
-    // C. Time-Based Stagnation Exit
-    if (bar_index - entryBar > stagnationBars and not isTp1Hit)
-        strategy.close(strategy.position_size > 0 ? "Long" : "Short", comment="Stagnation Exit")
+// --- TRAILING STOP LOGIC (After TP1 is hit) ---
+// Note: Pine Script's native strategy tester has limitations in dynamically adjusting stops
+// for remaining portions. A common workaround is to manage it via bar-by-bar checks.
+if strategy.position_size > 0 and strategy.opentrades[0].profit() > 0 // Check if in a profitable trade (proxy for TP1 hit)
+    newStop = ta.lowest(low, 10)[1] // Trail behind the low of the last 10 bars
+    currentStop = strategy.opentrades[0].stop_price()
+    if na(currentStop) or newStop > currentStop
+        strategy.exit("Trail Long", "Long", stop=newStop) // Update the stop for the entire remaining position
 
-// Note: An End-of-Session exit would require session time checks, e.g., `time_close('1500-1545')`
+if strategy.position_size < 0 and strategy.opentrades[0].profit() > 0
+    newStop = ta.highest(high, 10)[1] // Trail behind the high of the last 10 bars
+    currentStop = strategy.opentrades[0].stop_price()
+    if na(currentStop) or newStop < currentStop
+        strategy.exit("Trail Short", "Short", stop=newStop)
 ```
     

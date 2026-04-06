@@ -3,70 +3,90 @@
 
 ### 1. Architectural Efficiency & Optimization
 
-The script's architecture demonstrates a functional but computationally inefficient approach to several core tasks.
+The script's architecture contains significant inefficiencies that will impact performance, especially on lower timeframes or over long historical data ranges.
 
-*   **Calculation-Heavy Operations:**
-    *   **Inefficient Loop:** The most significant performance issue is the `for` loop used to determine `volIncreasing`. This loop executes on every bar, iterating `volCandles` times. For a default of `3`, this is `3` historical lookups per bar. This is a classic anti-pattern in Pine Script. A more efficient, vectorized approach would be to use built-in functions. For instance, `ta.falling(volume, volCandles)` could check for consecutively decreasing volume, and its inverse logic could be adapted for this purpose, eliminating the loop entirely.
-    *   **Drawing Object Proliferation:** The script creates new `label.new()` and `box.new()` objects on every single trade trigger. In a long backtest or on a low timeframe with many signals, this will generate hundreds or thousands of drawing objects, leading to severe chart lag and potential "Too many drawings" errors. This is a critical architectural flaw. The correct approach is to manage a fixed-size collection of drawings (e.g., using an `array`) and update/reposition them, deleting the oldest ones as new ones are created.
+*   **Computational Footprint & Redundancy:**
+    *   **Inefficient Drawing Management:** The most critical flaw is the creation of new `label.new()` and `box.new()` objects on every trigger event. These drawing objects are persistent and accumulate on the chart, leading to a "Too many drawings" runtime error and causing severe chart lag. The correct approach is to create a limited pool of reusable drawings (e.g., using an array of labels/boxes) and update their properties (`label.set_*`, `box.set_*`) or delete them when they are no longer relevant.
+    *   **Unnecessary Loop:** The `for` loop used to calculate `volIncreasing` runs on every bar. While the default loop size is small (`volCandles = 3`), this is computationally more expensive than using built-in functions. This specific logic (checking for a strictly increasing volume sequence) can be implemented more efficiently without a loop:
+        ```pine
+        // Original loop
+        // bool volIncreasing = true
+        // for i = 0 to volCandles - 1
+        //     if volume[i] < volume[i+1]
+        //         volIncreasing := false
+        //         break
 
-*   **Redundant Calculations:** The core logic for pivot detection (`iSH`, `sSH`, etc.) and indicator calculations (`atr`, `rsi`) runs on every bar. While this is standard, the combination of these with the inefficient loop contributes to a heavier-than-necessary computational footprint.
+        // Optimized version
+        bool volIncreasing = ta.rising(volume, volCandles)
+        ```
+        *Note: The original loop's logic `volume[i] < volume[i+1]` is flawed. It checks if a more recent bar's volume is less than an older bar's, which is the opposite of an increasing trend. `ta.rising()` correctly checks for an increasing sequence and is far more efficient.*
 
-*   **`max_bars_back` Usage:** The script implicitly relies on Pine Script to determine `max_bars_back`. The largest lookback is driven by the pivot logic (`swingLookback * 2 + 1`) and the `ema(close, 200)`. With a default `swingLookback` of 50, this results in a lookback of 101 bars, which is acceptable. However, users increasing this value significantly could impact performance without realizing the quadratic effect.
+*   **Effective Use of Built-ins & State Management:**
+    *   The script correctly uses `var` to declare stateful variables like `lastISH`, `lastSSH`, `sl`, `tp1`, etc. This is crucial for preventing recalculation on every bar and correctly managing trade state.
+    *   It effectively leverages `ta.*` functions for standard indicators (ATR, RSI, EMA), which is optimal.
 
 ### 2. Modern Standards & Syntax Audit
 
-The script is written in `@version=6`, but it fails to leverage the most powerful features that distinguish modern Pine Script from its predecessors.
+The script is written using `//@version=6`, which is a beta version of Pine Script. While forward-looking, it means the script relies on a non-finalized language version. The audit will evaluate it against established v5 best practices, which v6 inherits.
 
-*   **Legacy Check:** The script correctly uses v6 namespaces (`ta.`, `str.`, etc.), modern `input.*` functions with grouping, and the `var` keyword for state persistence. It avoids obsolete functions and syntax, indicating a successful migration from an earlier version or a developer familiar with the basics of v5/v6.
+*   **Legacy Check:** The code is fully modernized and contains no legacy syntax from v3 or v4. It correctly uses `input.*` functions, `color.new`, and proper function signatures.
 
-*   **Missed Opportunity for Advanced Features:**
-    *   **Arrays:** The lack of arrays to manage drawing objects is the most significant missed opportunity. This feature is purpose-built to solve the exact performance problem (drawing proliferation) that this script creates.
-    *   **User-Defined Types (UDTs):** The script manages multiple related state variables for a trade in the global scope: `sl`, `tp1`, `tp1Hit`, `entryBar`. This is a prime use case for a UDT to encapsulate this state into a single, clean object. This would improve readability and make the code's intent clearer.
+*   **Advanced Features:**
+    *   **Missed Opportunity for User-Defined Types (UDTs):** The script manages several related state variables for an open position (`sl`, `tp1`, `tp1Hit`, `entryBar`). This is a prime use case for a UDT to encapsulate the trade's state, significantly improving code clarity and maintainability.
         ```pine
         // Example of a UDT implementation
         type TradeState
             float sl
             float tp1
-            bool  tp1Hit
-            int   entryBar
+            bool tp1Hit
+            int entryBar
 
-        var TradeState activeTrade = na
+        var trade = TradeState.new(na, na, false, 0)
+
+        // In execution logic:
+        if bTrigger and strategy.position_size == 0
+            trade.sl := low - (atr * atrMult)
+            trade.tp1 := close + ((close - trade.sl) * tp1RR)
+            // ... and so on
         ```
-    *   **Functions for Modularity:** The code lacks custom functions. The trigger logic, position management, and dashboard updates are all implemented in the global scope. Encapsulating these into functions (e.g., `f_isTrigger()`, `f_managePosition()`, `f_updateDashboard()`) would dramatically improve code organization, readability, and reusability.
+    *   **Arrays/Maps:** While not strictly necessary, arrays could have been used to manage the drawing objects mentioned in the optimization section, preventing the creation of new objects on each signal.
 
 ### 3. Logic Integrity & Reliability
 
-The script's logic is its strongest attribute, demonstrating a solid understanding of how to avoid common trading script fallacies.
+The script contains a high-risk logical flaw that undermines the reliability of its backtest results.
 
-*   **Repainting & Future Leaks:** The script is **free of repainting**.
-    *   It does not use `request.security()` in a way that would introduce future data.
-    *   The pivot detection logic (`high[lookback] == ta.highest(high, lookback * 2 + 1)`) is a standard, non-repainting method. It correctly identifies a pivot only after `lookback` bars have passed, ensuring the signal is based on confirmed history.
-    *   All triggers and calculations are based on historical data (`[1]`, `[2]`) or confirmed data on the current closing bar. The backtest results can be considered reliable from a data-leak perspective.
+*   **Repainting & Future Leaks:**
+    *   **Intrabar Repainting:** The trigger logic contains a critical flaw:
+        ```pine
+        bool bTrigger = ... and (not useFVGConfluence or bFVG[1] or bFVG)
+        bool sTrigger = ... and (not useFVGConfluence or sFVG[1] or sFVG)
+        ```
+        The condition checks for a Fair Value Gap on the previous bar (`bFVG[1]`) **OR** the current, unclosed bar (`bFVG`). A signal based on the state of the current bar (`bFVG`) will repaint. It can appear and disappear multiple times as the price of the live bar fluctuates. A strategy backtest based on this logic is unreliable, as it may execute trades based on conditions that did not persist until the bar's close. The condition should be restricted to historical, confirmed bars (e.g., `bFVG[1]`).
 
 *   **Calculation Stability:**
-    *   The script is generally stable. It correctly checks for `strategy.closedtrades > 0` before calculating the win rate, avoiding a division-by-zero error.
-    *   `na` handling is implemented correctly for plotting, preventing lines from being drawn when no position is active.
-    *   The logic relies on standard built-in indicators that are robust across various assets and market conditions.
+    *   The script is generally stable. It correctly guards against division-by-zero when calculating the win rate (`strategy.closedtrades > 0`).
+    *   `na` values are handled appropriately for initializing state variables and in plotting functions, preventing runtime errors.
 
 ### 4. Readability & Maintainability
 
-The script's readability is a mixed bag, with excellent input organization but poor code-level clarity.
+The script demonstrates a mix of excellent and poor practices in code clarity.
 
-*   **Naming Conventions:** Variable names are often cryptic and non-descriptive (e.g., `iSH`, `iSL`, `xoI`, `xuI`, `mssL`, `mssS`). While these abbreviations might be familiar to SMC practitioners, they create a steep learning curve for others and violate clean code principles. More descriptive names like `isInternalSwingHigh` or `isMarketStructureShiftLong` would be far superior.
+*   **Naming Conventions:** Variable names are often cryptic (e.g., `mssL`, `xoI`, `xuS`). While these abbreviations might be common in the SMC niche, they harm general readability and make the script difficult for others to maintain or debug. More descriptive names like `marketStructureShiftLong` or `crossoverInternalHigh` would be far superior.
 
-*   **Documentation & Code Structure:**
-    *   **Positive:** The input menu is exceptionally well-organized using `group`, `inline`, and `tooltip`, making it very user-friendly. The code is also logically sectioned with comments (e.g., `--- Core Calculations ---`).
-    *   **Negative:** There are almost no inline comments explaining the *purpose* or *methodology* behind the code blocks. The complex, single-line boolean logic for `bTrigger` and `sTrigger` is very difficult to parse and debug without being broken down or commented.
-
-*   **Maintainability:** The lack of functions and the use of duplicated logic for long/short position management make the script difficult to maintain or extend. For example, if a change were needed in the trailing stop logic, it would have to be applied in two separate places, increasing the risk of error.
+*   **Documentation & Structure:**
+    *   **Excellent Input Organization:** The use of `group`, `inline`, and `tooltip` in the input declarations is a high point, creating a clean, professional, and user-friendly settings panel.
+    *   **Good Code Structure:** The code is logically segmented into sections (Inputs, Core Calcs, Execution, etc.), which aids in navigation.
+    *   **Hardcoded "Magic Numbers":** Several key parameters are hardcoded within the script (e.g., `ta.sma(volume, 20)`, `ta.rsi(close, 14)`, `ta.ema(close, 200)`). These should be exposed as user inputs to increase the script's flexibility and make its logic more transparent.
 
 ---
 
 ### Audit Verdict
 
-**Code Quality Grade: B-**
+**Code Quality Grade: D+**
 
-*   **Greatest Technical Achievement:** The script's **logical integrity and freedom from repainting** is its most commendable quality. It correctly implements a complex, non-repainting strategy, ensuring that its backtesting results are a reliable representation of the defined logic. This is a critical and often-failed test for many public strategy scripts.
+This grade reflects a script with a polished user interface but critical underlying architectural and logical flaws that severely compromise its performance and reliability.
 
-*   **Most Significant Technical Debt:** The script's primary technical debt is its **poor performance architecture and failure to adopt modern Pine Script features**. The use of a `for` loop for a simple rolling check and, most critically, the creation of unlimited drawing objects (`label.new`, `box.new`) are major architectural flaws that will lead to significant performance degradation. The code is a v6 script by syntax but a v4 script in spirit, missing key opportunities to use Arrays and UDTs for a more efficient, readable, and maintainable structure.
+*   **Greatest Technical Achievement:** The script's **user interface and configuration panel** are exceptionally well-designed. The logical grouping of inputs and the clean, informative Heads-Up Display (HUD) table demonstrate a strong commitment to user experience, making the strategy's complex settings easy to navigate.
+
+*   **Most Significant Technical Debt:** The script's most severe issue is its **inefficient handling of drawing objects**. Creating new labels and boxes on every signal without a mechanism for removal or reuse is an unsustainable practice that guarantees performance degradation and runtime errors. This architectural oversight makes the script unsuitable for serious, long-term use on active charts. The secondary, but equally critical, flaw is the **use of repainting logic** in the trade triggers, which invalidates the integrity of its backtesting results.
     
