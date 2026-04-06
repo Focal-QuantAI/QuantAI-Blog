@@ -1,0 +1,174 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+//@version=6
+strategy("LuxAlgo SMC Pro Ultimate", overlay = true, margin_long = 100, margin_short = 100, initial_capital = 10000, default_qty_type = strategy.percent_of_equity, default_qty_value = 10)
+
+// --- Groups ---
+string G_SMC    = "Market Structure (MSS/BOS/CHoCH)"
+string G_OB_FVG = "Order Blocks & FVGs"
+string G_PD     = "Premium & Discount Zones"
+string G_FILT   = "Confirmation Filters"
+string G_RANK   = "Signal Ranking & Volume"
+string G_RISK   = "Risk Management"
+string G_STYLE  = "Visual Settings & Colors"
+
+// --- Inputs ---
+string structureMode = input.string("All", "Structure Mode", options = ["Internal", "Swing", "All"], group = G_SMC)
+int internalLookback = input.int(9, "Internal Lookback", minval = 2, group = G_SMC)
+int swingLookback    = input.int(50, "Swing Lookback", minval = 2, group = G_SMC)
+string tradeDirection = input.string("Both", "Trade Direction", options = ["Both", "Long Only", "Short Only"], group = G_SMC)
+
+bool useFVGConfluence = input.bool(true, "Require FVG Presence", group = G_OB_FVG)
+bool showSMCZones     = input.bool(true, "Visualize Trigger OB/FVG", group = G_OB_FVG)
+
+bool requirePDZone = input.bool(true, "Only Buy in Discount / Sell in Premium", group = G_PD)
+int pdLookback     = input.int(100, "PD Range Lookback", minval = 10, group = G_PD)
+
+bool useDivFilter = input.bool(false, "Use Reversal Divergence Filter", group = G_FILT)
+bool useBBFilter  = input.bool(false, "Use Bollinger Band Filter", group = G_FILT)
+
+float volMult     = input.float(1.2, "Volume Strength Multiplier", group = G_RANK)
+int volCandles    = input.int(3, "Volume Momentum Check", minval = 1, group = G_RANK)
+
+float tp1RR       = input.float(1.5, "TP1 Risk:Reward", group = G_RISK)
+float atrMult     = input.float(3.0, "ATR Stop Multiplier", group = G_RISK)
+int atrLen        = input.int(9, "ATR Length", group = G_RISK)
+int decayRate     = input.int(2, "Signal Decay Speed", minval = 1, maxval = 10, group = G_RISK)
+
+// Style & Color Inputs
+string labelSize  = input.string(size.small, "Label Size", options = [size.tiny, size.small, size.normal, size.large, size.huge], group = G_STYLE)
+color bullColor   = input.color(#089981, "Bullish Signals (Long)", group = G_STYLE, inline = "C1")
+color bearColor   = input.color(#f23645, "Bearish Signals (Short)", group = G_STYLE, inline = "C1")
+color slColor     = input.color(#f23645, "Stop Loss Line", group = G_STYLE, inline = "C2")
+color tpColor     = input.color(#089981, "Take Profit Line", group = G_STYLE, inline = "C2")
+color hudBgColor  = input.color(color.new(#131722, 10), "Dashboard Background", group = G_STYLE, inline = "C3")
+color hudTextColor = input.color(color.white, "Dashboard Text", group = G_STYLE, inline = "C3")
+int bgTransp      = input.int(95, "Position BG Transparency", minval = 0, maxval = 100, group = G_STYLE, tooltip = "Transparency for the bullish/bearish background highlight.")
+
+// --- Core Calculations ---
+float atr = ta.atr(atrLen)
+float volAvg = ta.sma(volume, 20)
+float rsi = ta.rsi(close, 14)
+float ema200 = ta.ema(close, 200)
+[bbMid, _, _] = ta.bb(close, 20, 2.0)
+
+// 1. Premium / Discount Zone
+float rangeHigh = ta.highest(high, pdLookback)
+float rangeLow  = ta.lowest(low, pdLookback)
+float equilibrium = (rangeHigh + rangeLow) / 2
+bool inDiscount = close < equilibrium
+bool inPremium  = close > equilibrium
+
+// 2. Fair Value Gaps (FVG)
+bool bFVG = low > high[2] and close[1] > high[2]
+bool sFVG = high < low[2] and close[1] < low[2]
+
+// 3. Volume Momentum
+bool volIncreasing = true
+if volCandles > 0
+    for i = 0 to volCandles - 1
+        if volume[i] < volume[i+1]
+            volIncreasing := false
+            break
+
+// 4. Structure
+bool iSH = high[internalLookback] == ta.highest(high, internalLookback * 2 + 1)
+bool iSL = low[internalLookback] == ta.lowest(low, internalLookback * 2 + 1)
+var float lastISH = na, var float lastISL = na
+if iSH
+    lastISH := high[internalLookback]
+if iSL
+    lastISL := low[internalLookback]
+
+bool sSH = high[swingLookback] == ta.highest(high, swingLookback * 2 + 1)
+bool sSL = low[swingLookback] == ta.lowest(low, swingLookback * 2 + 1)
+var float lastSSH = na, var float lastSSL = na
+if sSH
+    lastSSH := high[swingLookback]
+if sSL
+    lastSSL := low[swingLookback]
+
+bool xoI = ta.crossover(close, lastISH), bool xuI = ta.crossunder(close, lastISL)
+bool xoS = ta.crossover(close, lastSSH), bool xuS = ta.crossunder(close, lastSSL)
+
+bool mssL = (structureMode == "Internal" and xoI) or (structureMode == "Swing" and xoS) or (structureMode == "All" and (xoI or xoS))
+bool mssS = (structureMode == "Internal" and xuI) or (structureMode == "Swing" and xuS) or (structureMode == "All" and (xuI or xuS))
+
+// 5. Divergence Logic
+bool bullDiv = rsi > rsi[1] and low < low[1]
+bool bearDiv = rsi < rsi[1] and high > high[1]
+
+// --- Trigger Logic ---
+bool bTrigger = mssL and (not requirePDZone or inDiscount) and (not useFVGConfluence or bFVG[1] or bFVG) and (not useDivFilter or bullDiv) and (not useBBFilter or close > bbMid)
+bool sTrigger = mssS and (not requirePDZone or inPremium) and (not useFVGConfluence or sFVG[1] or sFVG) and (not useDivFilter or bearDiv) and (not useBBFilter or close < bbMid)
+
+// --- Execution ---
+var float sl     = na
+var float tp1    = na
+var bool  tp1Hit = false
+var int entryBar = 0
+bool isStrong = volume > volAvg * volMult and volIncreasing
+
+if bTrigger and strategy.position_size == 0 and (tradeDirection == "Both" or tradeDirection == "Long Only")
+    sl       := low - (atr * atrMult), tp1 := close + ((close - sl) * tp1RR), tp1Hit := false, entryBar := bar_index
+    string msg = (isStrong ? "STRONG SMC BUY" : "SMC BUY") + "\n[MSS + DISCOUNT]"
+    strategy.entry("Long", strategy.long, comment = msg)
+    label.new(bar_index, low, msg + "\nSL: " + str.tostring(sl, "#.##") + "\nTP1: " + str.tostring(tp1, "#.##"), color = bullColor, textcolor = color.white, style = label.style_label_up, size = labelSize)
+    if showSMCZones
+        box.new(bar_index-2, high[2], bar_index, low, color.new(bullColor, 80), 1, line.style_dotted, bgcolor = color.new(bullColor, 80), text = "Trigger Area", text_size = size.tiny, text_color = color.white)
+
+if sTrigger and strategy.position_size == 0 and (tradeDirection == "Both" or tradeDirection == "Short Only")
+    sl       := high + (atr * atrMult), tp1 := close - ((sl - close) * tp1RR), tp1Hit := false, entryBar := bar_index
+    string msg = (isStrong ? "STRONG SMC SELL" : "SMC SELL") + "\n[MSS + PREMIUM]"
+    strategy.entry("Short", strategy.short, comment = msg)
+    label.new(bar_index, high, msg + "\nSL: " + str.tostring(sl, "#.##") + "\nTP1: " + str.tostring(tp1, "#.##"), color = bearColor, textcolor = color.white, style = label.style_label_down, size = labelSize)
+    if showSMCZones
+        box.new(bar_index-2, low[2], bar_index, high, color.new(bearColor, 80), 1, line.style_dotted, bgcolor = color.new(bearColor, 80), text = "Trigger Area", text_size = size.tiny, text_color = color.white)
+
+// --- Management ---
+if strategy.position_size > 0
+    if not tp1Hit and high >= tp1
+        strategy.exit("TP1_L", "Long", qty_percent = 50, limit = tp1, comment = "TP1 Hit"), tp1Hit := true, sl := strategy.position_avg_price 
+    float trail = low - (atr * atrMult)
+    if trail > sl
+        sl := trail
+    strategy.exit("Exit_L", "Long", stop = sl, comment = "SL/Trail")
+
+if strategy.position_size < 0
+    if not tp1Hit and low <= tp1
+        strategy.exit("TP1_S", "Short", qty_percent = 50, limit = tp1, comment = "TP1 Hit"), tp1Hit := true, sl := strategy.position_avg_price 
+    float trail = high + (atr * atrMult)
+    if trail < sl
+        sl := trail
+    strategy.exit("Exit_S", "Short", stop = sl, comment = "SL/Trail")
+
+// --- Confluence Meter ---
+float confScore = 0.0
+if strategy.position_size != 0
+    bool isLong = strategy.position_size > 0
+    float tS = (isLong ? close > ema200 : close < ema200) ? 30 : 0
+    float mS = (isLong ? rsi < 70 : rsi > 30) ? 30 : 0
+    float vS = (isLong ? close > bbMid : close < bbMid) ? 20 : 0
+    confScore := tS + mS + vS + math.max(0, 20 - ((bar_index - entryBar) * decayRate))
+
+// --- Visuals ---
+plot(strategy.position_size != 0 ? sl : na, "Stop Loss", slColor, 2, style = plot.style_linebr)
+plot(strategy.position_size != 0 and not tp1Hit ? tp1 : na, "TP Target", tpColor, 1, style = plot.style_linebr)
+bgcolor(strategy.position_size > 0 ? color.new(bullColor, bgTransp) : strategy.position_size < 0 ? color.new(bearColor, bgTransp) : na)
+
+// --- Dashboard ---
+var table HUD = table.new(position.top_right, 2, 7, bgcolor = hudBgColor, border_width = 1, border_color = hudTextColor)
+if barstate.islast
+    float wR = strategy.closedtrades > 0 ? (strategy.wintrades / strategy.closedtrades) * 100 : 0
+    color mC = confScore > 75 ? bullColor : confScore > 40 ? color.orange : bearColor
+    table.cell(HUD, 0, 0, "SMC Pro HUD", text_color = hudTextColor, text_size = size.small)
+    table.cell(HUD, 1, 0, structureMode, text_color = hudTextColor)
+    table.cell(HUD, 0, 1, "Win Rate", text_color = hudTextColor, text_halign = text.align_left)
+    table.cell(HUD, 1, 1, str.tostring(wR, "#.##") + "%", text_color = wR >= 50 ? bullColor : bearColor)
+    table.cell(HUD, 0, 2, "Net Profit", text_color = hudTextColor, text_halign = text.align_left)
+    table.cell(HUD, 1, 2, str.tostring(strategy.netprofit, "#.##"), text_color = strategy.netprofit >= 0 ? bullColor : bearColor)
+    table.cell(HUD, 0, 3, "PD Status", text_color = hudTextColor, text_halign = text.align_left)
+    table.cell(HUD, 1, 3, inDiscount ? "DISCOUNT" : inPremium ? "PREMIUM" : "EQ", text_color = inDiscount ? bullColor : inPremium ? bearColor : hudTextColor)
+    table.cell(HUD, 0, 4, "Position", text_color = hudTextColor, text_halign = text.align_left)
+    table.cell(HUD, 1, 4, strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT", text_color = strategy.position_size > 0 ? bullColor : strategy.position_size < 0 ? bearColor : hudTextColor)
+    table.cell(HUD, 0, 5, "Confluence", text_color = hudTextColor, text_halign = text.align_left)
+    table.cell(HUD, 1, 5, strategy.position_size != 0 ? str.tostring(confScore, "#") + "%" : "N/A", bgcolor = strategy.position_size != 0 ? color.new(mC, 70) : na, text_color = strategy.position_size != 0 ? color.white : hudTextColor)
