@@ -1,0 +1,222 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © kingshukghosh71
+
+//@version=5
+indicator("RSI & Z-Score Speedometer", overlay=false)
+
+// ---------------------------------------------------------------
+// Layout inputs
+radius  = input.int(40,    title="Radius in bars",              group="Layout")
+gap     = input.int(45,    title="Gap between speedometers",    group="Layout")
+offset1 = input.int(10,     title="Left speedometer bar offset", group="Layout")
+y_axis  = input.float(0.0, title="Y axis location",             group="Layout")
+y_scale = input.int(100,   title="Y axis scaling", minval=1,    group="Layout")
+
+// RSI inputs
+rsi_src = input.source(close, title="RSI source", group="RSI Speedometer")
+rsi_len = input.int(14,       title="RSI length",  group="RSI Speedometer")
+
+// Z-Score inputs
+z_src   = input.source(close, title="Z-Score source",            group="Z-Score Speedometer")
+z_len   = input.int(20,       title="Z-Score length", minval=2,  group="Z-Score Speedometer")
+z_limit = input.float(3.0,    title="Z-Score limit (±)", minval=0.5, step=0.5, group="Z-Score Speedometer")
+
+var float pi = 2.0 * math.asin(1.0)
+
+// ---------------------------------------------------------------
+// Right speedometer starts just after left one ends
+offset2 = offset1 + 2 * radius + gap
+
+// Build both x-axis arrays
+x_axis1 = array.new_int(radius * 2, 0)
+x_axis2 = array.new_int(radius * 2, 0)
+
+for i = offset1 to offset1 + 2 * radius - 1
+    array.set(x_axis1, i - offset1, time[i])
+for i = offset2 to offset2 + 2 * radius - 1
+    array.set(x_axis2, i - offset2, time[i])
+
+right1  = array.get(x_axis1, 0)
+left1   = array.get(x_axis1, 2 * radius - 1)
+center1 = array.get(x_axis1, radius - 1)
+
+right2  = array.get(x_axis2, 0)
+left2   = array.get(x_axis2, 2 * radius - 1)
+center2 = array.get(x_axis2, radius - 1)
+
+// ---------------------------------------------------------------
+// Metrics
+// ---------------------------------------------------------------
+// RSI (0–100, maps directly to needle)
+rsi_metric = ta.rsi(rsi_src, rsi_len)
+
+// Z-Score (clamped to ±z_limit, rescaled to 0–100)
+z_mean    = ta.sma(z_src, z_len)
+z_std     = ta.stdev(z_src, z_len)
+z_raw     = z_std != 0.0 ? (z_src - z_mean) / z_std : 0.0
+z_clamped = math.max(-z_limit, math.min(z_limit, z_raw))
+z_metric  = ((z_clamped + z_limit) / (2.0 * z_limit)) * 100.0
+
+// ---------------------------------------------------------------
+// -------------------- Draw Sector Function ---------------------
+// ---------------------------------------------------------------
+f_draw_sector(_xa, _sn, _ts, _ll, _r, _ya, _ys, _col, _wid) =>
+    _segs  = math.floor(_ll / _ts)
+    _rps   = pi / (_segs * _ts)
+    _start = (pi / _ts) * (_sn - 1)
+    for _i = 0 to _segs - 1
+        _a1  = _start + _rps * _i
+        _a2  = _start + _rps * (_i + 1)
+        _ix1 = int(math.round(math.cos(_a1) * (_r - 1) + _r - 1))
+        _ix2 = int(math.round(math.cos(_a2) * (_r - 1) + _r - 1))
+        _x1  = array.get(_xa, _ix1)
+        _y1  = _ya + math.sin(_a1) * _ys
+        _x2  = array.get(_xa, _ix2)
+        _y2  = _ya + math.sin(_a2) * _ys
+        _seg = line.new(x1=_x1, y1=_y1, x2=_x2, y2=_y2, xloc=xloc.bar_time, color=_col, width=_wid)
+        line.delete(_seg[1])
+// ---------------------------------------------------------------
+// -------------------- Draw Base Line Function ------------------
+// ---------------------------------------------------------------
+f_draw_base_line(_left, _right, _ya, _col, _wid) =>
+    _bl = line.new(x1=_left, y1=_ya, x2=_right, y2=_ya, xloc=xloc.bar_time, color=_col, width=_wid)
+    line.delete(_bl[1])
+// ---------------------------------------------------------------
+// -------------------- Draw Needle Function ---------------------
+// ---------------------------------------------------------------
+f_draw_needle(_xa, _val, _xc, _r, _ya, _ys, _col, _wid) =>
+    _ang = pi / 100.0 * _val
+    _ix  = int(math.round(math.cos(_ang) * (_r - 1) + _r - 1))
+    _x1  = array.get(_xa, _ix)
+    _y1  = _ya + math.sin(_ang) * _ys
+    _nd  = line.new(x1=_x1, y1=_y1, x2=_xc, y2=_ya, xloc=xloc.bar_time, color=_col, width=_wid)
+    line.delete(_nd[1])
+// ---------------------------------------------------------------
+// ----------------------- Draw Tick Function --------------------
+// ---------------------------------------------------------------
+f_draw_tick(_xa, _num, _div, _rp, _xc, _r, _ya, _ys, _col, _wid) =>
+    _pos   = pi / _div * _num
+    _sc    = 1.0 - (_rp / 100.0)
+    _cos_p = math.cos(_pos)
+    _sin_p = math.sin(_pos)
+    _ix1   = int(math.round(_cos_p * (_r - 1) + _r - 1))
+    _ix2   = int(math.round(_cos_p * (_r - 1) * _sc + _r - 1))
+    _x1    = array.get(_xa, _ix1)
+    _y1    = _ya + _sin_p * _ys
+    _x2    = array.get(_xa, _ix2)
+    _y2    = _ya + _sin_p * _ys * _sc
+    _tk    = line.new(x1=_x1, y1=_y1, x2=_x2, y2=_y2, xloc=xloc.bar_time, color=_col, width=_wid)
+    line.delete(_tk[1])
+// ---------------------------------------------------------------
+// -------------------- Draw Sector Label ------------------------
+// ---------------------------------------------------------------
+f_draw_sector_label(_xa, _num, _div, _r, _ya, _ys, _col, _tc, _txt) =>
+    _pos = pi / _div * _num
+    _cx  = math.cos(_pos)
+    _sx  = math.sin(_pos)
+    _ix  = int(math.round(_cx * (_r - 1))) + _r - 1
+    _lx  = array.get(_xa, _ix)
+    _ly  = _ya + _sx * _ys
+    _b1  = pi / 6.0
+    _b2  = pi / 3.0
+    _b4  = pi / 6.0 * 4.0
+    _b5  = pi / 6.0 * 5.0
+    _sty = _pos <= _b1 ? label.style_label_right :
+           _pos <  _b2 ? label.style_label_lower_right :
+           _pos <= _b4 ? label.style_label_down :
+           _pos <= _b5 ? label.style_label_lower_left :
+           label.style_label_left
+    _sl  = label.new(x=_lx, y=_ly, xloc=xloc.bar_time, color=_col, textcolor=_tc, style=_sty, text=_txt)
+    label.delete(_sl[1])
+// ---------------------------------------------------------------
+// ----------------------- Draw Title Label ----------------------
+// ---------------------------------------------------------------
+f_draw_title_label(_rp, _xc, _ya, _ys, _col, _tc, _txt) =>
+    _ty = _ya - (_rp / 100.0) * _ys
+    _tl = label.new(x=_xc, y=_ty, xloc=xloc.bar_time, color=_col, textcolor=_tc, style=label.style_label_center, text=_txt)
+    label.delete(_tl[1])
+
+// ---------------------------------------------------------------
+// =================== RSI SPEEDOMETER (left) ===================
+// ---------------------------------------------------------------
+f_draw_base_line(left1, right1, y_axis, color.white, 1)
+
+f_draw_sector(x_axis1, 1, 5, 20, radius, y_axis, y_scale, color.red,    5)
+f_draw_sector(x_axis1, 1, 5, 20, radius, y_axis, y_scale, color.white,  1)
+f_draw_sector(x_axis1, 2, 5, 20, radius, y_axis, y_scale, color.orange, 5)
+f_draw_sector(x_axis1, 2, 5, 20, radius, y_axis, y_scale, color.white,  1)
+f_draw_sector(x_axis1, 3, 5, 20, radius, y_axis, y_scale, color.gray,   5)
+f_draw_sector(x_axis1, 3, 5, 20, radius, y_axis, y_scale, color.white,  1)
+f_draw_sector(x_axis1, 4, 5, 20, radius, y_axis, y_scale, color.lime,   5)
+f_draw_sector(x_axis1, 4, 5, 20, radius, y_axis, y_scale, color.white,  1)
+f_draw_sector(x_axis1, 5, 5, 20, radius, y_axis, y_scale, color.green,  5)
+f_draw_sector(x_axis1, 5, 5, 20, radius, y_axis, y_scale, color.white,  1)
+
+f_draw_tick(x_axis1, 1, 5,  8, center1, radius, y_axis, y_scale, color.white, 3)
+f_draw_tick(x_axis1, 2, 5,  8, center1, radius, y_axis, y_scale, color.white, 3)
+f_draw_tick(x_axis1, 3, 5,  8, center1, radius, y_axis, y_scale, color.white, 3)
+f_draw_tick(x_axis1, 4, 5,  8, center1, radius, y_axis, y_scale, color.white, 3)
+f_draw_tick(x_axis1, 1, 10, 6, center1, radius, y_axis, y_scale, color.white, 1)
+f_draw_tick(x_axis1, 3, 10, 6, center1, radius, y_axis, y_scale, color.white, 1)
+f_draw_tick(x_axis1, 5, 10, 6, center1, radius, y_axis, y_scale, color.white, 1)
+f_draw_tick(x_axis1, 7, 10, 6, center1, radius, y_axis, y_scale, color.white, 1)
+f_draw_tick(x_axis1, 9, 10, 6, center1, radius, y_axis, y_scale, color.white, 1)
+
+f_draw_sector_label(x_axis1, 1, 10, radius, y_axis, y_scale, color.red,    color.white, "Strong Sell")
+f_draw_sector_label(x_axis1, 3, 10, radius, y_axis, y_scale, color.orange, color.white, "Sell")
+f_draw_sector_label(x_axis1, 5, 10, radius, y_axis, y_scale, color.gray,   color.white, "Neutral")
+f_draw_sector_label(x_axis1, 7, 10, radius, y_axis, y_scale, color.lime,   color.white, "Buy")
+f_draw_sector_label(x_axis1, 9, 10, radius, y_axis, y_scale, color.green,  color.white, "Strong Buy")
+
+_rsi_txt = "RSI (" + str.tostring(rsi_len) + "): " +
+           str.tostring(math.round(rsi_metric * 100.0) / 100.0)
+f_draw_needle(x_axis1, rsi_metric, center1, radius, y_axis, y_scale, color.white, 2)
+f_draw_title_label(25, center1, y_axis, y_scale, color.white, color.black, _rsi_txt)
+
+// ---------------------------------------------------------------
+// ================== Z-SCORE SPEEDOMETER (right) ================
+// ---------------------------------------------------------------
+f_draw_base_line(left2, right2, y_axis, color.white, 1)
+
+f_draw_sector(x_axis2, 1, 5, 20, radius, y_axis, y_scale, color.red,    5)
+f_draw_sector(x_axis2, 1, 5, 20, radius, y_axis, y_scale, color.white,  1)
+f_draw_sector(x_axis2, 2, 5, 20, radius, y_axis, y_scale, color.orange, 5)
+f_draw_sector(x_axis2, 2, 5, 20, radius, y_axis, y_scale, color.white,  1)
+f_draw_sector(x_axis2, 3, 5, 20, radius, y_axis, y_scale, color.gray,   5)
+f_draw_sector(x_axis2, 3, 5, 20, radius, y_axis, y_scale, color.white,  1)
+f_draw_sector(x_axis2, 4, 5, 20, radius, y_axis, y_scale, color.lime,   5)
+f_draw_sector(x_axis2, 4, 5, 20, radius, y_axis, y_scale, color.white,  1)
+f_draw_sector(x_axis2, 5, 5, 20, radius, y_axis, y_scale, color.green,  5)
+f_draw_sector(x_axis2, 5, 5, 20, radius, y_axis, y_scale, color.white,  1)
+
+f_draw_tick(x_axis2, 1, 5,  8, center2, radius, y_axis, y_scale, color.white, 3)
+f_draw_tick(x_axis2, 2, 5,  8, center2, radius, y_axis, y_scale, color.white, 3)
+f_draw_tick(x_axis2, 3, 5,  8, center2, radius, y_axis, y_scale, color.white, 3)
+f_draw_tick(x_axis2, 4, 5,  8, center2, radius, y_axis, y_scale, color.white, 3)
+f_draw_tick(x_axis2, 1, 10, 6, center2, radius, y_axis, y_scale, color.white, 1)
+f_draw_tick(x_axis2, 3, 10, 6, center2, radius, y_axis, y_scale, color.white, 1)
+f_draw_tick(x_axis2, 5, 10, 6, center2, radius, y_axis, y_scale, color.white, 1)
+f_draw_tick(x_axis2, 7, 10, 6, center2, radius, y_axis, y_scale, color.white, 1)
+f_draw_tick(x_axis2, 9, 10, 6, center2, radius, y_axis, y_scale, color.white, 1)
+
+f_draw_sector_label(x_axis2, 1, 10, radius, y_axis, y_scale, color.red,    color.white, "< -2σ")
+f_draw_sector_label(x_axis2, 3, 10, radius, y_axis, y_scale, color.orange, color.white, "-1σ")
+f_draw_sector_label(x_axis2, 5, 10, radius, y_axis, y_scale, color.gray,   color.white, "0")
+f_draw_sector_label(x_axis2, 7, 10, radius, y_axis, y_scale, color.lime,   color.white, "+1σ")
+f_draw_sector_label(x_axis2, 9, 10, radius, y_axis, y_scale, color.green,  color.white, "> +2σ")
+
+_z_rounded = math.round(z_raw * 100.0) / 100.0
+_z_txt     = "Z-Score (" + str.tostring(z_len) + "): " + str.tostring(_z_rounded)
+f_draw_needle(x_axis2, z_metric, center2, radius, y_axis, y_scale, color.white, 2)
+f_draw_title_label(25, center2, y_axis, y_scale, color.white, color.black, _z_txt)
+
+// ---------------------------------------------------------------
+// Hidden plots to anchor the y-range
+// ---------------------------------------------------------------
+plot(rsi_metric, display=display.none)
+plot(z_metric,   display=display.none)
+hline(int(y_scale * 1.2),          color=color.new(color.black, 100))
+hline(int(y_axis - y_scale * 0.2), color=color.new(color.black, 100))
+// ---------------------------------------------------------------
+//End of Script®
+// ---------------------------------------------------------------
