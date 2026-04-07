@@ -1,0 +1,1415 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © s47marsac
+// TSI Adaptive Scalper v4.2 OVL-SP — Volume + Anti-Whipsaw + TP/SL Zones
+// ──────────────────────────────────────────────────────────────────────────────
+// OVL-SP (Split Pane) VERSION:
+//   • TSI oscillator displayed in a separate pane below the chart
+//   • Signals (arrows, labels, EMA, BOS/CHoCH, TP/SL zones) projected onto
+//     the price chart via force_overlay = true
+//   • All calculation logic is IDENTICAL to the standard v4.1 OVL version
+//     + 3 new v4.2 modules
+// ──────────────────────────────────────────────────────────────────────────────
+// WHAT'S NEW IN v4.2:
+//   1. 📊 Relative Volume — score bonus/penalty based on volume
+//   2. 🛡️ Anti-Whipsaw — consolidation detection (BB Width) to
+//      reduce false signals in ranging markets
+//   3. 🎯 ATR TP/SL Zones — visual projection of targets and stops
+//      with automatic R:R calculation
+// ──────────────────────────────────────────────────────────────────────────────
+
+//@version=6
+indicator("TSI Adaptive Scalper v4.2 OVL-SP", shorttitle="TSI42-SP", overlay=false, precision=2, max_labels_count=500, max_lines_count=500, max_boxes_count=500)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ AUTOMATIC INSTRUMENT TYPE DETECTION
+// ══════════════════════════════════════════════════════════════════════════════
+
+getAssetType() =>
+    sym = syminfo.ticker
+    base = syminfo.basecurrency
+    quote = syminfo.currency
+
+    isGold = str.contains(sym, "XAU") or str.contains(sym, "GOLD") or str.contains(sym, "GC1") or str.contains(sym, "GC2")
+    isSilver = str.contains(sym, "XAG") or str.contains(sym, "SILVER") or str.contains(sym, "SI1")
+    isMetal = isGold or isSilver
+
+    isNAS = str.contains(sym, "NAS") or str.contains(sym, "NDX") or str.contains(sym, "QQQ") or str.contains(sym, "NQ1") or str.contains(sym, "USTEC") or str.contains(sym, "US100")
+    isSP = str.contains(sym, "SPX") or str.contains(sym, "SPY") or str.contains(sym, "ES1") or str.contains(sym, "US500") or str.contains(sym, "SP500")
+    isDAX = str.contains(sym, "DAX") or str.contains(sym, "DE40") or str.contains(sym, "GER40") or str.contains(sym, "DE30")
+    isDJI = str.contains(sym, "DJI") or str.contains(sym, "YM1") or str.contains(sym, "US30") or str.contains(sym, "DOW")
+    isCAC = str.contains(sym, "CAC") or str.contains(sym, "FRA40") or str.contains(sym, "FR40")
+    isNIK = str.contains(sym, "NKD") or str.contains(sym, "NIK") or str.contains(sym, "JP225") or str.contains(sym, "JPN225")
+    isFTSE = str.contains(sym, "FTSE") or str.contains(sym, "UK100") or str.contains(sym, "UKX")
+    isIndex = isNAS or isSP or isDAX or isDJI or isCAC or isNIK or isFTSE
+
+    isVolatileFX = str.contains(sym, "GBPJPY") or str.contains(sym, "EURJPY") or str.contains(sym, "AUDJPY") or str.contains(sym, "CADJPY") or str.contains(sym, "NZDJPY") or str.contains(sym, "GBPAUD") or str.contains(sym, "GBPNZD")
+
+    isFX = (syminfo.type == "forex" or str.length(base) == 3 and str.length(quote) == 3) and not isMetal
+
+    isMetal ? 1 : isIndex ? 2 : isVolatileFX ? 3 : isFX ? 4 : 2
+
+assetType = getAssetType()
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ AUTOMATIC TIMEFRAME DETECTION
+// ══════════════════════════════════════════════════════════════════════════════
+
+getTFMinutes() =>
+    float tfMin = 0.0
+    if timeframe.isseconds
+        tfMin := timeframe.multiplier / 60.0
+    else if timeframe.isminutes
+        tfMin := timeframe.multiplier * 1.0
+    else if timeframe.isdwm
+        tfMin := timeframe.multiplier * 1440.0
+    else
+        tfMin := timeframe.multiplier * 60.0
+    tfMin
+
+float currentTFMin = getTFMinutes()
+
+getTFClass() =>
+    int cls = 3
+    if currentTFMin <= 1.0
+        cls := 1
+    else if currentTFMin <= 5.0
+        cls := 2
+    else if currentTFMin <= 15.0
+        cls := 3
+    else if currentTFMin <= 60.0
+        cls := 4
+    else if currentTFMin <= 240.0
+        cls := 5
+    else
+        cls := 6
+    cls
+
+int tfClass = getTFClass()
+
+string tfClassLabel = switch tfClass
+    1 => "M1 SCALP"
+    2 => "M5 SCALP+"
+    3 => "M15 INTRADAY"
+    4 => "H1 INTRADAY+"
+    5 => "H4 SWING"
+    6 => "D1 SWING+"
+    => "M15 INTRADAY"
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ INPUTS — Instrument & TF Detection
+// ══════════════════════════════════════════════════════════════════════════════
+
+string assetLabel = switch assetType
+    1 => "GOLD/METAL"
+    2 => "INDEX"
+    3 => "VOLATILE FOREX"
+    4 => "STANDARD FOREX"
+    => "UNKNOWN"
+
+string modeInput = input.string("Auto", "Instrument detection mode", options=["Auto", "Gold/Metal", "Index", "Volatile Forex", "Standard Forex"], group="⚙️ Instrument Detection")
+
+int activeType = switch modeInput
+    "Gold/Metal"      => 1
+    "Index"           => 2
+    "Volatile Forex"  => 3
+    "Standard Forex"  => 4
+    => assetType
+
+string tfModeInput = input.string("Auto", "Timeframe detection mode", options=["Auto", "M1 Scalp", "M5 Scalp+", "M15 Intraday", "H1 Intraday+", "H4 Swing", "D1 Swing+"], group="⚙️ Instrument Detection")
+
+int activeTF = switch tfModeInput
+    "M1 Scalp"       => 1
+    "M5 Scalp+"      => 2
+    "M15 Intraday"   => 3
+    "H1 Intraday+"   => 4
+    "H4 Swing"       => 5
+    "D1 Swing+"      => 6
+    => tfClass
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ BASE PARAMETER MATRIX — TSI Long / Short / Signal
+// ══════════════════════════════════════════════════════════════════════════════
+
+int matrixKey = activeTF * 10 + activeType
+
+int baseLong = switch matrixKey
+    11 => 13
+    12 => 13
+    13 => 13
+    14 => 17
+    21 => 18
+    22 => 18
+    23 => 18
+    24 => 21
+    31 => 21
+    32 => 21
+    33 => 21
+    34 => 25
+    41 => 25
+    42 => 25
+    43 => 25
+    44 => 30
+    51 => 30
+    52 => 30
+    53 => 30
+    54 => 34
+    61 => 34
+    62 => 34
+    63 => 34
+    64 => 40
+    => 13
+
+int baseShort = switch matrixKey
+    11 => 7
+    12 => 7
+    13 => 7
+    14 => 9
+    21 => 9
+    22 => 9
+    23 => 9
+    24 => 11
+    31 => 11
+    32 => 11
+    33 => 11
+    34 => 13
+    41 => 13
+    42 => 13
+    43 => 13
+    44 => 15
+    51 => 15
+    52 => 15
+    53 => 15
+    54 => 17
+    61 => 17
+    62 => 17
+    63 => 17
+    64 => 20
+    => 7
+
+int baseSignal = switch matrixKey
+    11 => 5
+    12 => 7
+    13 => 5
+    14 => 9
+    21 => 7
+    22 => 9
+    23 => 7
+    24 => 11
+    31 => 9
+    32 => 11
+    33 => 9
+    34 => 13
+    41 => 11
+    42 => 13
+    43 => 11
+    44 => 14
+    51 => 13
+    52 => 14
+    53 => 13
+    54 => 16
+    61 => 14
+    62 => 16
+    63 => 14
+    64 => 18
+    => 7
+
+float baseOB = switch matrixKey
+    11 => 25.0
+    12 => 30.0
+    13 => 25.0
+    14 => 20.0
+    21 => 28.0
+    22 => 32.0
+    23 => 28.0
+    24 => 22.0
+    31 => 30.0
+    32 => 35.0
+    33 => 30.0
+    34 => 25.0
+    41 => 32.0
+    42 => 37.0
+    43 => 32.0
+    44 => 27.0
+    51 => 35.0
+    52 => 40.0
+    53 => 35.0
+    54 => 30.0
+    61 => 38.0
+    62 => 42.0
+    63 => 38.0
+    64 => 32.0
+    => 25.0
+
+int baseEMA = switch activeTF
+    1 => 21
+    2 => 34
+    3 => 50
+    4 => 50
+    5 => 55
+    6 => 60
+    => 21
+
+float baseADXThresh = switch activeTF
+    1 => 20.0
+    2 => 22.0
+    3 => 23.0
+    4 => 22.0
+    5 => 21.0
+    6 => 20.0
+    => 20.0
+
+string adaptMTFTF = switch activeTF
+    1 => "5"
+    2 => "15"
+    3 => "60"
+    4 => "240"
+    5 => "D"
+    6 => "W"
+    => "5"
+
+float baseSlopeMin = switch activeTF
+    1 => 0.3
+    2 => 0.5
+    3 => 0.8
+    4 => 1.0
+    5 => 1.2
+    6 => 1.5
+    => 0.3
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ ADAPTIVE TSI REACTIVITY MODULE
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool  useAdaptTSI   = input.bool(true, "Adaptive TSI reactivity", group="🧠 Dynamic Adaptation",
+      tooltip="Adaptive post-smoothing. High vol = increased reactivity, low vol = increased smoothing.")
+int   atrAdaptFast  = input.int(10, "Fast ATR (adaptation)", minval=3, maxval=30, group="🧠 Dynamic Adaptation")
+int   atrAdaptSlow  = input.int(40, "Slow ATR (adaptation)", minval=15, maxval=100, group="🧠 Dynamic Adaptation")
+float adaptMinAlpha = input.float(0.15, "Min. alpha (low vol.)", minval=0.05, maxval=0.5, step=0.05, group="🧠 Dynamic Adaptation")
+float adaptMaxAlpha = input.float(0.85, "Max. alpha (high vol.)", minval=0.5, maxval=1.0, step=0.05, group="🧠 Dynamic Adaptation")
+
+float atrFastVal    = ta.atr(atrAdaptFast)
+float atrSlowVal    = ta.atr(atrAdaptSlow)
+float volRatioRaw   = nz(atrFastVal / atrSlowVal, 1.0)
+float adaptAlpha    = math.max(adaptMinAlpha, math.min(adaptMaxAlpha, adaptMinAlpha + (volRatioRaw - 0.6) * (adaptMaxAlpha - adaptMinAlpha) / 1.0))
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ DYNAMIC ATR VOLATILITY — OB/OS Thresholds
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool  useDynVol    = input.bool(true, "Dynamic OB/OS thresholds (ATR)", group="🌊 Dynamic Volatility")
+int   atrFast      = input.int(14, "Fast ATR (thresholds)", minval=5, maxval=50, group="🌊 Dynamic Volatility")
+int   atrSlow      = input.int(50, "Slow ATR (thresholds)", minval=20, maxval=200, group="🌊 Dynamic Volatility")
+float volFloor     = input.float(0.6, "Vol. ratio floor", minval=0.3, maxval=1.0, step=0.05, group="🌊 Dynamic Volatility")
+float volCeiling   = input.float(1.6, "Vol. ratio ceiling", minval=1.0, maxval=3.0, step=0.1, group="🌊 Dynamic Volatility")
+
+float atrRatio   = ta.atr(atrFast) / ta.atr(atrSlow)
+float clampedVol = math.max(volFloor, math.min(volCeiling, nz(atrRatio, 1.0)))
+
+float dynOB = useDynVol ? baseOB * clampedVol : baseOB
+float dynOS = useDynVol ? -baseOB * clampedVol : -baseOB
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ MANUAL OVERRIDE
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool  useManual    = input.bool(false, "Use manual parameters", group="🔧 Manual TSI Parameters")
+int   manLong      = input.int(13, "Long Period", minval=5, maxval=50, group="🔧 Manual TSI Parameters")
+int   manShort     = input.int(7, "Short Period", minval=2, maxval=25, group="🔧 Manual TSI Parameters")
+int   manSignal    = input.int(7, "Signal Period", minval=2, maxval=20, group="🔧 Manual TSI Parameters")
+float manOB        = input.float(25.0, "Overbought", minval=10.0, maxval=50.0, group="🔧 Manual TSI Parameters")
+float manOS        = input.float(-25.0, "Oversold", minval=-50.0, maxval=-10.0, group="🔧 Manual TSI Parameters")
+int   manEMA       = input.int(21, "Trend EMA", minval=5, maxval=200, group="🔧 Manual TSI Parameters")
+float manADXThr    = input.float(20.0, "ADX Threshold", minval=10.0, maxval=40.0, group="🔧 Manual TSI Parameters")
+float manSlopeMin  = input.float(0.3, "Min. crossover slope", minval=0.0, maxval=5.0, step=0.1, group="🔧 Manual TSI Parameters")
+
+int   fLong       = useManual ? manLong    : baseLong
+int   fShort      = useManual ? manShort   : baseShort
+int   fSignal     = useManual ? manSignal  : baseSignal
+float lvlOB       = useManual ? manOB      : dynOB
+float lvlOS       = useManual ? manOS      : dynOS
+int   emaLenFinal = useManual ? manEMA     : baseEMA
+float adxThFinal  = useManual ? manADXThr  : baseADXThresh
+float slopeMin    = useManual ? manSlopeMin : baseSlopeMin
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ TSI CALCULATION — with adaptive post-smoothing
+// ══════════════════════════════════════════════════════════════════════════════
+
+float mom       = ta.change(close)
+float smoothMom = ta.ema(ta.ema(mom, fLong), fShort)
+float smoothAbs = ta.ema(ta.ema(math.abs(mom), fLong), fShort)
+float tsiRaw    = smoothAbs != 0 ? 100.0 * smoothMom / smoothAbs : 0.0
+
+var float tsiAdapt = 0.0
+float activeAlpha  = useAdaptTSI and not useManual ? adaptAlpha : 1.0
+tsiAdapt := activeAlpha * tsiRaw + (1.0 - activeAlpha) * nz(tsiAdapt[1], tsiRaw)
+
+float tsi       = useAdaptTSI and not useManual ? tsiAdapt : tsiRaw
+float sig       = ta.ema(tsiRaw, fSignal)
+float hist      = tsi - sig
+
+int   rsiLen    = input.int(14, "RSI Period", minval=2, maxval=50, group="📋 Dashboard")
+float rsiVal    = ta.rsi(close, rsiLen)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ PURE MOMENTUM MODULE (OB/OS threshold crossing)
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool  useMomentumMode  = input.bool(true, "Pure Momentum Mode (OB/OS crossing)", group="⚡ Pure Momentum v4.0",
+      tooltip="Generates signals when TSI enters/exits extreme zones, independently from crossovers.")
+float deepMultiplier   = input.float(1.5, "Deep zone multiplier", minval=1.2, maxval=2.5, step=0.1, group="⚡ Pure Momentum v4.0",
+      tooltip="The 'deep' threshold = OB/OS × this multiplier. Very strong momentum signal.")
+bool  showMomEntry     = input.bool(true, "Extreme zone entry signals", group="⚡ Pure Momentum v4.0")
+bool  showMomExit      = input.bool(true, "Extreme zone exit signals (timing)", group="⚡ Pure Momentum v4.0")
+bool  showMomDeep      = input.bool(true, "Deep momentum signals", group="⚡ Pure Momentum v4.0")
+
+float deepOB = dynOB * deepMultiplier
+float deepOS = dynOS * deepMultiplier
+
+bool momEntryBull = tsi[1] >= dynOS and tsi < dynOS
+bool momEntryBear = tsi[1] <= dynOB and tsi > dynOB
+bool momExitBull  = tsi[1] <= dynOS and tsi > dynOS
+bool momExitBear  = tsi[1] >= dynOB and tsi < dynOB
+bool momDeepBull  = tsi[1] >= deepOS and tsi < deepOS
+bool momDeepBear  = tsi[1] <= deepOB and tsi > deepOB
+
+bool momBullSignal = useMomentumMode and momExitBull
+bool momBearSignal = useMomentumMode and momExitBear
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ MARKET STRUCTURE (BOS / CHoCH)
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool  useStructure   = input.bool(true, "Enable Market Structure", group="🏗️ Market Structure")
+int   swingLookback  = input.int(5, "Swing H/L Lookback", minval=2, maxval=20, group="🏗️ Market Structure")
+bool  showStructure  = input.bool(true, "Show BOS/CHoCH labels", group="🏗️ Market Structure")
+bool  showSwingLines = input.bool(false, "Show swing H/L lines", group="🏗️ Market Structure")
+
+float swHigh = ta.pivothigh(high, swingLookback, swingLookback)
+float swLow  = ta.pivotlow(low, swingLookback, swingLookback)
+
+var float lastSwingHigh    = na
+var float lastSwingLow     = na
+var int   lastSwingHighBar = na
+var int   lastSwingLowBar  = na
+var float prevSwingHigh    = na
+var float prevSwingLow     = na
+var int   structureBias    = 0
+
+var int   structEvent      = 0
+var int   lastStructBar    = 0
+structEvent := 0
+
+if not na(swHigh)
+    prevSwingHigh    := lastSwingHigh
+    lastSwingHigh    := swHigh
+    lastSwingHighBar := bar_index - swingLookback
+
+if not na(swLow)
+    prevSwingLow    := lastSwingLow
+    lastSwingLow    := swLow
+    lastSwingLowBar := bar_index - swingLookback
+
+bool breakAboveSH = not na(lastSwingHigh) and close > lastSwingHigh and close[1] <= lastSwingHigh
+bool breakBelowSL = not na(lastSwingLow) and close < lastSwingLow and close[1] >= lastSwingLow
+
+if useStructure
+    if breakAboveSH
+        if structureBias >= 0
+            structEvent := 1
+        else
+            structEvent := 3
+        structureBias := 1
+        lastStructBar := bar_index
+    if breakBelowSL
+        if structureBias <= 0
+            structEvent := 2
+        else
+            structEvent := 4
+        structureBias := -1
+        lastStructBar := bar_index
+
+bool structBullish = structureBias > 0
+bool structBearish = structureBias < 0
+
+int  structFreshBars = input.int(10, "Structure freshness (bars)", minval=3, maxval=30, group="🏗️ Market Structure",
+     tooltip="If a BOS/CHoCH occurred within the last N bars, score bonus is applied.")
+bool structIsFresh   = (bar_index - lastStructBar) <= structFreshBars
+
+color colBOS_Bull   = #00897B
+color colBOS_Bear   = #E53935
+color colCHoCH_Bull = #00BFA5
+color colCHoCH_Bear = #FF1744
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ GRANULAR SESSIONS
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool   useSessionFilter  = input.bool(true, "Enable Session filter", group="🕐 Sessions v4.0")
+bool   blockOffSession   = input.bool(false, "Block signals outside sessions", group="🕐 Sessions v4.0")
+bool   filterNYOpen      = input.bool(true, "Filter NY Open chaos (12:30-13:00)", group="🕐 Sessions v4.0",
+       tooltip="Reduces the multiplier during the first 30 minutes of NY to avoid false signals on news.")
+bool   showSessionBG     = input.bool(true, "Colored session background", group="🕐 Sessions v4.0")
+
+int utcHour = hour(time, "UTC")
+int utcMin  = minute(time, "UTC")
+float utcDecimal = utcHour + utcMin / 60.0
+
+bool isTokyoOpen   = utcDecimal >= 0.0 and utcDecimal < 1.5
+bool isAsia        = utcDecimal >= 0.0 and utcDecimal < 9.0
+bool isPreLondon   = utcDecimal >= 6.0 and utcDecimal < 7.0
+bool isLondon      = utcDecimal >= 7.0 and utcDecimal < 16.0
+bool isNYOpenChaos = utcDecimal >= 12.5 and utcDecimal < 13.0
+bool isNY          = utcDecimal >= 12.0 and utcDecimal < 21.0
+bool isOverlap     = utcDecimal >= 12.0 and utcDecimal < 16.0
+bool isActive      = isAsia or isLondon or isNY
+
+float sessionMultiplier = 1.0
+if useSessionFilter
+    if isOverlap
+        if filterNYOpen and isNYOpenChaos
+            sessionMultiplier := 0.85
+        else
+            sessionMultiplier := 1.20
+    else if isLondon
+        sessionMultiplier := 1.10
+    else if isNY
+        sessionMultiplier := 1.10
+    else if isAsia
+        if isTokyoOpen
+            sessionMultiplier := activeType == 1 ? 1.10 : activeType == 3 ? 1.15 : 0.90
+        else
+            sessionMultiplier := activeType == 1 ? 0.85 : activeType == 3 ? 1.05 : 0.90
+    else
+        sessionMultiplier := 0.80
+
+bool sessionAllowSignal = useSessionFilter ? (blockOffSession ? isActive : true) : true
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ CROSSOVER SLOPE FILTER
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool  useSlopeFilter = input.bool(true, "Filter weak crossovers (slope)", group="📊 Signals v4.2")
+float crossSlope     = math.abs(hist - hist[2]) / 2.0
+bool  slopeOK        = useSlopeFilter ? crossSlope >= slopeMin : true
+float slopeStrong    = slopeMin * 2.0
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ MOMENTUM HISTOGRAM
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool  showHistMom  = input.bool(false, "Show Momentum Histogram (derivative)", group="📊 Signals v4.2")
+float histMom      = hist - hist[1]
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ TREND FILTER — EMA + ADX
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool  useTrendFilter = input.bool(true, "Enable trend filter", group="📈 Trend Filter")
+bool  useADXFilter   = input.bool(true, "Enable ADX filter", group="📈 Trend Filter")
+int   adxLen         = input.int(14, "ADX Period", minval=5, maxval=50, group="📈 Trend Filter")
+bool  useADXSmooth   = input.bool(true, "Double ADX smoothing", group="📈 Trend Filter")
+int   adxSmoothLen   = input.int(5, "ADX smoothing period", minval=2, maxval=14, group="📈 Trend Filter")
+
+float emaVal   = ta.ema(close, emaLenFinal)
+bool  trendUp  = close > emaVal
+bool  trendDn  = close < emaVal
+
+float trueRange = ta.tr(true)
+float upMove    = high - high[1]
+float dnMove    = low[1] - low
+float plusDM    = upMove > dnMove and upMove > 0 ? upMove : 0.0
+float minusDM   = dnMove > upMove and dnMove > 0 ? dnMove : 0.0
+
+float smoothTR      = ta.rma(trueRange, adxLen)
+float smoothPlusDM  = ta.rma(plusDM, adxLen)
+float smoothMinusDM = ta.rma(minusDM, adxLen)
+
+float diPlus   = smoothTR != 0 ? 100.0 * smoothPlusDM / smoothTR : 0.0
+float diMinus  = smoothTR != 0 ? 100.0 * smoothMinusDM / smoothTR : 0.0
+float dxVal    = (diPlus + diMinus) != 0 ? 100.0 * math.abs(diPlus - diMinus) / (diPlus + diMinus) : 0.0
+float adxRaw   = ta.rma(dxVal, adxLen)
+
+float adxVal     = useADXSmooth ? ta.ema(adxRaw, adxSmoothLen) : adxRaw
+bool  isTrending = adxVal > adxThFinal
+
+bool trendBullOK = useTrendFilter ? trendUp : true
+bool trendBearOK = useTrendFilter ? trendDn : true
+bool adxOK       = useADXFilter ? isTrending : true
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ MTF CONFIRMATION
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool   useMTF      = input.bool(true, "Enable MTF confirmation", group="🔄 Multi-Timeframe")
+string mtfMode     = input.string("Not in opposite zone", "MTF Mode", options=["Same direction", "Not in opposite zone"], group="🔄 Multi-Timeframe")
+string mtfManualTF = input.timeframe("", "MTF TF override (empty=auto)", group="🔄 Multi-Timeframe")
+
+string mtfTF = str.length(mtfManualTF) > 0 ? mtfManualTF : adaptMTFTF
+
+calcTSI(float src, int longPer, int shortPer) =>
+    float m  = ta.change(src)
+    float sm = ta.ema(ta.ema(m, longPer), shortPer)
+    float sa = ta.ema(ta.ema(math.abs(m), longPer), shortPer)
+    sa != 0 ? 100.0 * sm / sa : 0.0
+
+float tsiHTF = request.security(syminfo.tickerid, mtfTF, calcTSI(close, baseLong, baseShort), lookahead=barmerge.lookahead_off, gaps=barmerge.gaps_off)
+
+bool mtfBullOK = true
+bool mtfBearOK = true
+
+if useMTF
+    if mtfMode == "Same direction"
+        mtfBullOK := tsiHTF > 0
+        mtfBearOK := tsiHTF < 0
+    else
+        mtfBullOK := tsiHTF > dynOS * 0.8
+        mtfBearOK := tsiHTF < dynOB * 0.8
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ COMPOSITE BIAS (Local vs HTF)
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool useBiasComposite = input.bool(true, "Enable Composite Bias", group="🧭 Composite Bias v4.0",
+     tooltip="Combines local TSI, HTF and Structure for a unified directional bias.")
+
+int localBias  = tsi > 5 ? 1 : tsi < -5 ? -1 : 0
+int htfBias    = tsiHTF > 0 ? 1 : tsiHTF < 0 ? -1 : 0
+int structBias = structureBias
+
+float biasScore = localBias * 1.0 + htfBias * 1.5 + (useStructure ? structBias * 1.5 : 0.0)
+float biasMax   = useStructure ? 4.0 : 2.5
+
+int compositeBias = biasScore > 1.0 ? 1 : biasScore < -1.0 ? -1 : 0
+
+bool isAligned    = (localBias == htfBias and htfBias != 0) and (not useStructure or structBias == htfBias)
+bool isDivergent  = (localBias != 0 and htfBias != 0 and localBias != htfBias)
+bool isTransition = isDivergent and (momExitBull or momExitBear)
+
+string biasState    = isAligned ? "ALIGNED" : isTransition ? "TRANSITION" : isDivergent ? "DIVERGENT" : "NEUTRAL"
+float  biasMultiplier = isAligned ? 1.15 : isTransition ? 1.05 : isDivergent ? 0.85 : 1.0
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ 🆕 MODULE 1 — RELATIVE VOLUME v4.2
+// ══════════════════════════════════════════════════════════════════════════════
+// Relative volume compares the current volume to its moving average.
+// A signal with strong volume is more reliable; a signal on anemic volume
+// is suspect. Bonus/penalty integrated into the scoring system.
+// ──────────────────────────────────────────────────────────────────────────────
+
+bool  useVolFilter    = input.bool(true, "Enable Relative Volume filter", group="📊 Relative Volume v4.2",
+      tooltip="Adds a bonus to the score if volume confirms the signal, and a penalty if volume is anemic.")
+int   volRelPeriod    = input.int(20, "Volume SMA Period", minval=5, maxval=100, group="📊 Relative Volume v4.2")
+float volRelBullish   = input.float(1.3, "Strong volume threshold (×SMA)", minval=1.0, maxval=3.0, step=0.1, group="📊 Relative Volume v4.2",
+      tooltip="Volume ≥ this ratio × SMA = score bonus.")
+float volRelWeak      = input.float(0.6, "Weak volume threshold (×SMA)", minval=0.1, maxval=0.9, step=0.05, group="📊 Relative Volume v4.2",
+      tooltip="Volume ≤ this ratio × SMA = score penalty.")
+float volBonusMax     = input.float(1.0, "Max. strong volume bonus", minval=0.25, maxval=2.0, step=0.25, group="📊 Relative Volume v4.2")
+float volMalusMax     = input.float(0.75, "Max. weak volume penalty", minval=0.25, maxval=1.5, step=0.25, group="📊 Relative Volume v4.2")
+bool  showVolRelBG    = input.bool(false, "Highlight strong volume candles", group="📊 Relative Volume v4.2")
+
+float volSMA         = ta.sma(volume, volRelPeriod)
+float volRelative    = volSMA > 0 ? volume / volSMA : 1.0
+bool  volIsStrong    = volRelative >= volRelBullish
+bool  volIsWeak      = volRelative <= volRelWeak
+
+// Progressive bonus: the stronger the volume beyond the threshold, the larger the bonus (capped)
+float volScoreAdj = 0.0
+if useVolFilter
+    if volIsStrong
+        volScoreAdj := math.min(volBonusMax, (volRelative - volRelBullish) / (volRelBullish * 0.5) * volBonusMax)
+        volScoreAdj := math.max(0.25, volScoreAdj)  // minimum +0.25 if threshold crossed
+    else if volIsWeak
+        volScoreAdj := -math.min(volMalusMax, (volRelWeak - volRelative) / volRelWeak * volMalusMax)
+        volScoreAdj := math.min(-0.25, volScoreAdj)  // minimum -0.25 if threshold crossed
+
+// Optional highlighting on the price chart
+bgcolor(showVolRelBG and volIsStrong ? color.new(#00BFA5, 92) : na, title="BG Strong Volume", force_overlay=true)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ 🆕 MODULE 2 — ANTI-WHIPSAW / CONSOLIDATION v4.2
+// ══════════════════════════════════════════════════════════════════════════════
+// Detects consolidation phases via Bollinger Band width
+// (normalized BB Width). In consolidation, TSI crossovers generate
+// a lot of noise → we reduce the multiplier and/or increase the cooldown.
+// ──────────────────────────────────────────────────────────────────────────────
+
+bool  useAntiWhipsaw   = input.bool(true, "Enable Anti-Whipsaw (consolidation)", group="🛡️ Anti-Whipsaw v4.2",
+      tooltip="Detects ranges via BB Width. Reduces scoring and increases cooldown in consolidation.")
+int   bbPeriod         = input.int(20, "Bollinger Period", minval=10, maxval=50, group="🛡️ Anti-Whipsaw v4.2")
+float bbStdDev         = input.float(2.0, "Bollinger Std Dev", minval=1.0, maxval=3.0, step=0.5, group="🛡️ Anti-Whipsaw v4.2")
+float consolThreshold  = input.float(0.0, "Consolidation threshold (BB Width %)", minval=0.0, maxval=10.0, step=0.5, group="🛡️ Anti-Whipsaw v4.2",
+      tooltip="0 = auto-adaptive threshold based on historical percentile. Otherwise, BB Width < this value = consolidation.")
+float consolMultiplier = input.float(0.75, "Score multiplier in consol.", minval=0.3, maxval=1.0, step=0.05, group="🛡️ Anti-Whipsaw v4.2",
+      tooltip="The score is multiplied by this value when the market is in consolidation.")
+float consolCDMult     = input.float(1.5, "Cooldown multiplier in consol.", minval=1.0, maxval=3.0, step=0.25, group="🛡️ Anti-Whipsaw v4.2",
+      tooltip="The cooldown is multiplied by this value in consolidation.")
+bool  showConsolBG     = input.bool(true, "Show consolidation background", group="🛡️ Anti-Whipsaw v4.2")
+
+// Normalized BB Width calculation (in % of price)
+float bbBasis  = ta.sma(close, bbPeriod)
+float bbUpper  = bbBasis + bbStdDev * ta.stdev(close, bbPeriod)
+float bbLower  = bbBasis - bbStdDev * ta.stdev(close, bbPeriod)
+float bbWidth  = bbBasis != 0 ? (bbUpper - bbLower) / bbBasis * 100.0 : 0.0
+
+// Auto-adaptive threshold: 25th percentile of BB Width over 100 bars
+float bbWidthP25 = ta.percentile_linear_interpolation(bbWidth, 100, 25)
+float consolThr  = consolThreshold > 0 ? consolThreshold : bbWidthP25
+
+bool  isConsolidation = useAntiWhipsaw and bbWidth < consolThr
+float consolScoreMult = isConsolidation ? consolMultiplier : 1.0
+float consolCDFactor  = isConsolidation ? consolCDMult : 1.0
+
+// Subtle gray background on the price chart when in consolidation
+bgcolor(showConsolBG and isConsolidation ? color.new(#9E9E9E, 94) : na, title="BG Consolidation", force_overlay=true)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ SIGNAL DETECTION — Classic crossovers
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool showCross     = input.bool(true, "TSI/Signal Crossovers", group="📊 Signals v4.2")
+bool showOBOS      = input.bool(true, "Overbought/Oversold signals", group="📊 Signals v4.2")
+bool showDiverg    = input.bool(true, "Divergences", group="📊 Signals v4.2")
+bool showZeroCross = input.bool(false, "Zero line crossover", group="📊 Signals v4.2")
+int  divLookback   = input.int(14, "Divergence Lookback", minval=5, maxval=50, group="📊 Signals v4.2")
+bool showHist      = input.bool(true, "Show Histogram", group="📊 Signals v4.2")
+
+bool bullCross = ta.crossover(tsi, sig)
+bool bearCross = ta.crossunder(tsi, sig)
+
+bool inOSZone = tsi < dynOS or sig < dynOS
+bool inOBZone = tsi > dynOB or sig > dynOB
+
+bool nearOSZone = tsi < dynOS * 0.8 or sig < dynOS * 0.8
+bool nearOBZone = tsi > dynOB * 0.8 or sig > dynOB * 0.8
+
+bool bullCrossOBOS = showOBOS ? (bullCross and inOSZone) : bullCross
+bool bearCrossOBOS = showOBOS ? (bearCross and inOBZone) : bearCross
+
+bool bullCrossNear = bullCross and nearOSZone and not inOSZone
+bool bearCrossNear = bearCross and nearOBZone and not inOBZone
+
+bool bullTrendOK = inOSZone ? true : (nearOSZone ? true : trendBullOK)
+bool bearTrendOK = inOBZone ? true : (nearOBZone ? true : trendBearOK)
+bool bullMTFOK   = inOSZone ? (useMTF ? tsiHTF > dynOS * 1.5 : true) : mtfBullOK
+bool bearMTFOK   = inOBZone ? (useMTF ? tsiHTF < dynOB * 1.5 : true) : mtfBearOK
+
+bool bullSignalRaw = (bullCrossOBOS or (bullCrossNear and adxOK) or (bullCross and bullTrendOK and adxOK and bullMTFOK)) and slopeOK and sessionAllowSignal
+bool bearSignalRaw = (bearCrossOBOS or (bearCrossNear and adxOK) or (bearCross and bearTrendOK and adxOK and bearMTFOK)) and slopeOK and sessionAllowSignal
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ ATR-BASED STRUCTURAL COOLDOWN (v4.2: with consolidation factor)
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool  useStructuralCD    = input.bool(true, "ATR structural cooldown", group="⏱️ Cooldown v4.0",
+      tooltip="Cooldown proportional to volatility instead of a fixed timer.")
+int   cdBaseBarsFallback = input.int(10, "Fixed cooldown fallback (bars)", minval=1, maxval=100, group="⏱️ Cooldown v4.0",
+      tooltip="Used if structural cooldown is disabled.")
+float cdATRMult          = input.float(1.5, "ATR cooldown multiplier", minval=0.5, maxval=5.0, step=0.25, group="⏱️ Cooldown v4.0",
+      tooltip="Higher = longer cooldown. 1.5 = good scalping balance.")
+int   cdMinBars          = input.int(3, "Minimum bars between signals", minval=1, maxval=20, group="⏱️ Cooldown v4.0")
+int   cdMaxBars          = input.int(50, "Maximum bars between signals", minval=10, maxval=200, group="⏱️ Cooldown v4.0")
+
+// v4.2: cooldown increased in consolidation via consolCDFactor
+float cdDynamic = useStructuralCD ? math.max(cdMinBars, math.min(cdMaxBars, math.round(cdBaseBarsFallback * cdATRMult / math.max(0.3, clampedVol) * consolCDFactor))) : cdBaseBarsFallback * consolCDFactor
+
+var int lastBullBar = 0
+var int lastBearBar = 0
+
+bool bullCDOK = (bar_index - lastBullBar) >= cdDynamic
+bool bearCDOK = (bar_index - lastBearBar) >= cdDynamic
+
+bool bullSignalCross = bullSignalRaw and bullCDOK
+bool bearSignalCross = bearSignalRaw and bearCDOK
+
+bool bullMomCDOK = (bar_index - lastBullBar) >= cdDynamic
+bool bearMomCDOK = (bar_index - lastBearBar) >= cdDynamic
+
+bool bullSignalMom = momBullSignal and sessionAllowSignal and bullMomCDOK
+bool bearSignalMom = momBearSignal and sessionAllowSignal and bearMomCDOK
+
+bool bullSignal = bullSignalCross or bullSignalMom
+bool bearSignal = bearSignalCross or bearSignalMom
+
+if bullSignal
+    lastBullBar := bar_index
+if bearSignal
+    lastBearBar := bar_index
+
+string bullType = bullSignalCross ? "CROSS" : "MOM"
+string bearType = bearSignalCross ? "CROSS" : "MOM"
+
+bool zeroBullCross = ta.crossover(tsi, 0)
+bool zeroBearCross = ta.crossunder(tsi, 0)
+
+int barsSinceBull = bar_index - lastBullBar
+int barsSinceBear = bar_index - lastBearBar
+int barsSinceLast = math.min(barsSinceBull, barsSinceBear)
+string lastSignalDir = barsSinceBull < barsSinceBear ? "BUY" : barsSinceBear < barsSinceBull ? "SELL" : "—"
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ DIVERGENCES — Anti-repaint
+// ══════════════════════════════════════════════════════════════════════════════
+
+float divMinDepth  = input.float(5.0, "Min. divergence depth (TSI pts)", minval=1.0, maxval=30.0, group="🔀 Divergences v4.0")
+bool  divUseVol    = input.bool(false, "Confirm with Volume", group="🔀 Divergences v4.0")
+
+int   pivotLB = math.max(3, math.round(divLookback / 2))
+
+float pLow_dv  = ta.pivotlow(tsi, pivotLB, pivotLB)
+float pHigh_dv = ta.pivothigh(tsi, pivotLB, pivotLB)
+
+var float prevPivotLow     = na
+var float prevPriceLow     = na
+var int   prevPivotLowBar  = na
+var float prevVolLow       = na
+var float prevPivotHigh    = na
+var float prevPriceHigh    = na
+var int   prevPivotHighBar = na
+var float prevVolHigh      = na
+
+bool bullDiv = false
+bool bearDiv = false
+
+volAtPivot(int offset) =>
+    float v = 0.0
+    for i = -2 to 2
+        v += nz(volume[offset + i])
+    v / 5.0
+
+if not na(pLow_dv)
+    float currentPriceLow = low[pivotLB]
+    float currentVolLow   = volAtPivot(pivotLB)
+    if not na(prevPivotLow) and (bar_index - prevPivotLowBar) < divLookback * 3
+        bool priceOK = currentPriceLow < prevPriceLow
+        bool tsiOK   = pLow_dv > prevPivotLow
+        bool depthOK = math.abs(pLow_dv - prevPivotLow) >= divMinDepth
+        bool volOK   = divUseVol ? (currentVolLow < prevVolLow) : true
+        bool confirmed = barstate.isconfirmed or bar_index > (bar_index - pivotLB + pivotLB)
+        if priceOK and tsiOK and depthOK and volOK and confirmed
+            bullDiv := true
+    prevPivotLow    := pLow_dv
+    prevPriceLow    := currentPriceLow
+    prevPivotLowBar := bar_index
+    prevVolLow      := volAtPivot(pivotLB)
+
+if not na(pHigh_dv)
+    float currentPriceHigh = high[pivotLB]
+    float currentVolHigh   = volAtPivot(pivotLB)
+    if not na(prevPivotHigh) and (bar_index - prevPivotHighBar) < divLookback * 3
+        bool priceOK = currentPriceHigh > prevPriceHigh
+        bool tsiOK   = pHigh_dv < prevPivotHigh
+        bool depthOK = math.abs(pHigh_dv - prevPivotHigh) >= divMinDepth
+        bool volOK   = divUseVol ? (currentVolHigh < prevVolHigh) : true
+        bool confirmed = barstate.isconfirmed or bar_index > (bar_index - pivotLB + pivotLB)
+        if priceOK and tsiOK and depthOK and volOK and confirmed
+            bearDiv := true
+    prevPivotHigh    := pHigh_dv
+    prevPriceHigh    := currentPriceHigh
+    prevPivotHighBar := bar_index
+    prevVolHigh      := volAtPivot(pivotLB)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ CONFLUENCE SCORE v4.2 — WITH VOLUME + CONSOLIDATION
+// ══════════════════════════════════════════════════════════════════════════════
+
+float rawScoreBull = 0.0
+
+if bullSignalCross or bullSignalMom
+    rawScoreBull += 2.0
+
+if inOSZone
+    rawScoreBull += 1.5
+else if nearOSZone
+    rawScoreBull += 0.75
+
+if bullSignalCross and momBullSignal
+    rawScoreBull += 1.0
+
+if useStructure and structBullish
+    rawScoreBull += 1.5
+    if structIsFresh
+        rawScoreBull += 0.5
+
+if adxOK
+    rawScoreBull += 1.0
+
+if mtfBullOK and useMTF
+    rawScoreBull += 1.0
+
+if bullDiv
+    rawScoreBull += 1.5
+
+if bullSignalCross and crossSlope >= slopeStrong
+    rawScoreBull += 0.5
+
+// 🆕 v4.2: Relative Volume Bonus/Penalty
+if (bullSignalCross or bullSignalMom) and useVolFilter
+    rawScoreBull += volScoreAdj
+
+float rawScoreBear = 0.0
+
+if bearSignalCross or bearSignalMom
+    rawScoreBear += 2.0
+
+if inOBZone
+    rawScoreBear += 1.5
+else if nearOBZone
+    rawScoreBear += 0.75
+
+if bearSignalCross and momBearSignal
+    rawScoreBear += 1.0
+
+if useStructure and structBearish
+    rawScoreBear += 1.5
+    if structIsFresh
+        rawScoreBear += 0.5
+
+if adxOK
+    rawScoreBear += 1.0
+
+if mtfBearOK and useMTF
+    rawScoreBear += 1.0
+
+if bearDiv
+    rawScoreBear += 1.5
+
+if bearSignalCross and crossSlope >= slopeStrong
+    rawScoreBear += 0.5
+
+// 🆕 v4.2: Relative Volume Bonus/Penalty
+if (bearSignalCross or bearSignalMom) and useVolFilter
+    rawScoreBear += volScoreAdj
+
+float biasMultBull = useBiasComposite ? (compositeBias >= 1 ? biasMultiplier : compositeBias <= -1 ? 1.0 / biasMultiplier : 1.0) : 1.0
+float biasMultBear = useBiasComposite ? (compositeBias <= -1 ? biasMultiplier : compositeBias >= 1 ? 1.0 / biasMultiplier : 1.0) : 1.0
+
+// 🆕 v4.2: Consolidation multiplier applied to final score
+float adjScoreBull = math.min(10.0, math.max(0.0, rawScoreBull * biasMultBull * sessionMultiplier * consolScoreMult))
+float adjScoreBear = math.min(10.0, math.max(0.0, rawScoreBear * biasMultBear * sessionMultiplier * consolScoreMult))
+
+float activeScore = adjScoreBull > adjScoreBear ? adjScoreBull : adjScoreBear
+string scoreDir   = adjScoreBull > adjScoreBear ? "BUY" : adjScoreBear > adjScoreBull ? "SELL" : "—"
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ 🆕 MODULE 3 — ATR TP/SL ZONES v4.2
+// ══════════════════════════════════════════════════════════════════════════════
+// Visual projection of TP (green) and SL (red) zones based on ATR
+// at the time of the signal. The R:R is displayed in the signal label.
+// Zones are drawn via box.new() with force_overlay=true.
+// ──────────────────────────────────────────────────────────────────────────────
+
+bool  useTPSL         = input.bool(true, "Enable TP/SL Zones", group="🎯 TP/SL Zones v4.2",
+      tooltip="Projects visual TP and SL zones based on ATR at the time of the signal.")
+int   tpslATRPeriod   = input.int(14, "ATR Period (TP/SL)", minval=5, maxval=50, group="🎯 TP/SL Zones v4.2")
+float slATRMult       = input.float(1.2, "SL = ATR × this multiplier", minval=0.5, maxval=3.0, step=0.1, group="🎯 TP/SL Zones v4.2",
+      tooltip="Stop Loss distance in ATR multiples. 1.0-1.5 for scalping, 1.5-2.5 for swing.")
+float tp1RR           = input.float(1.5, "TP1 Risk Ratio (R:R)", minval=0.5, maxval=5.0, step=0.25, group="🎯 TP/SL Zones v4.2",
+      tooltip="TP1 = risk × this ratio. E.g.: 1.5 = 1.5R.")
+float tp2RR           = input.float(2.5, "TP2 Risk Ratio (R:R)", minval=1.0, maxval=8.0, step=0.25, group="🎯 TP/SL Zones v4.2",
+      tooltip="TP2 = risk × this ratio. E.g.: 2.5 = 2.5R. 0 = disabled.")
+float tpslMinScore    = input.float(4.0, "Min. score to display TP/SL", minval=1.0, maxval=10.0, step=0.5, group="🎯 TP/SL Zones v4.2",
+      tooltip="TP/SL zones only show for signals above this score.")
+int   tpslBoxBars     = input.int(20, "Zone width (bars)", minval=5, maxval=100, group="🎯 TP/SL Zones v4.2",
+      tooltip="Number of bars to project rightward for TP/SL boxes.")
+bool  useScoreAdjSL   = input.bool(true, "Score-adjusted SL", group="🎯 TP/SL Zones v4.2",
+      tooltip="High score → tighter SL (higher confidence). Low score → wider SL.")
+int   maxTPSLBoxes    = input.int(5, "Max displayed zones", minval=1, maxval=20, group="🎯 TP/SL Zones v4.2",
+      tooltip="Maximum number of TP/SL zone groups visible simultaneously.")
+
+float tpslATR = ta.atr(tpslATRPeriod)
+
+// Old boxes management to respect the limit
+var array<box> tpslBoxes = array.new<box>()
+
+cleanOldBoxes(int maxBoxes) =>
+    while array.size(tpslBoxes) > maxBoxes * 3  // 3 boxes per signal (SL, TP1, TP2)
+        box old = array.shift(tpslBoxes)
+        box.delete(old)
+
+// Score-adjusted SL: high score = tight SL, low score = wide SL
+calcSLMultiplier(float score) =>
+    if useScoreAdjSL
+        // Score 10 → ×0.85 (tight), Score 4 → ×1.15 (wide)
+        math.max(0.75, math.min(1.25, 1.35 - score * 0.05))
+    else
+        1.0
+
+if useTPSL and bullSignal and adjScoreBull >= tpslMinScore
+    float entry   = close
+    float slAdj   = calcSLMultiplier(adjScoreBull)
+    float slDist  = tpslATR * slATRMult * slAdj
+    float slPrice = entry - slDist
+    float tp1Price = entry + slDist * tp1RR
+    float tp2Price = entry + slDist * tp2RR
+
+    int boxRight = bar_index + tpslBoxBars
+
+    // SL box (red)
+    box slBox = box.new(bar_index, entry, boxRight, slPrice,
+         bgcolor=color.new(#F44336, 88), border_color=color.new(#F44336, 50), border_width=1,
+         text="SL " + str.tostring(slPrice, format.mintick), text_color=color.new(#F44336, 20),
+         text_size=size.tiny, text_halign=text.align_right, text_valign=text.align_bottom,
+         force_overlay=true)
+    array.push(tpslBoxes, slBox)
+
+    // TP1 box (light green)
+    box tp1Box = box.new(bar_index, entry, boxRight, tp1Price,
+         bgcolor=color.new(#4CAF50, 90), border_color=color.new(#4CAF50, 50), border_width=1,
+         text="TP1 " + str.tostring(tp1Price, format.mintick) + " (" + str.tostring(tp1RR, "#.#") + "R)",
+         text_color=color.new(#4CAF50, 20), text_size=size.tiny,
+         text_halign=text.align_right, text_valign=text.align_top,
+         force_overlay=true)
+    array.push(tpslBoxes, tp1Box)
+
+    // TP2 box (dark green)
+    if tp2RR > tp1RR
+        box tp2Box = box.new(bar_index, tp1Price, boxRight, tp2Price,
+             bgcolor=color.new(#2E7D32, 92), border_color=color.new(#2E7D32, 50), border_width=1,
+             text="TP2 " + str.tostring(tp2Price, format.mintick) + " (" + str.tostring(tp2RR, "#.#") + "R)",
+             text_color=color.new(#2E7D32, 20), text_size=size.tiny,
+             text_halign=text.align_right, text_valign=text.align_top,
+             force_overlay=true)
+        array.push(tpslBoxes, tp2Box)
+
+    cleanOldBoxes(maxTPSLBoxes)
+
+if useTPSL and bearSignal and adjScoreBear >= tpslMinScore
+    float entry   = close
+    float slAdj   = calcSLMultiplier(adjScoreBear)
+    float slDist  = tpslATR * slATRMult * slAdj
+    float slPrice = entry + slDist
+    float tp1Price = entry - slDist * tp1RR
+    float tp2Price = entry - slDist * tp2RR
+
+    int boxRight = bar_index + tpslBoxBars
+
+    // SL box (red)
+    box slBox = box.new(bar_index, entry, boxRight, slPrice,
+         bgcolor=color.new(#F44336, 88), border_color=color.new(#F44336, 50), border_width=1,
+         text="SL " + str.tostring(slPrice, format.mintick), text_color=color.new(#F44336, 20),
+         text_size=size.tiny, text_halign=text.align_right, text_valign=text.align_top,
+         force_overlay=true)
+    array.push(tpslBoxes, slBox)
+
+    // TP1 box (light green)
+    box tp1Box = box.new(bar_index, entry, boxRight, tp1Price,
+         bgcolor=color.new(#4CAF50, 90), border_color=color.new(#4CAF50, 50), border_width=1,
+         text="TP1 " + str.tostring(tp1Price, format.mintick) + " (" + str.tostring(tp1RR, "#.#") + "R)",
+         text_color=color.new(#4CAF50, 20), text_size=size.tiny,
+         text_halign=text.align_right, text_valign=text.align_bottom,
+         force_overlay=true)
+    array.push(tpslBoxes, tp1Box)
+
+    // TP2 box (dark green)
+    if tp2RR > tp1RR
+        box tp2Box = box.new(bar_index, tp1Price, boxRight, tp2Price,
+             bgcolor=color.new(#2E7D32, 92), border_color=color.new(#2E7D32, 50), border_width=1,
+             text="TP2 " + str.tostring(tp2Price, format.mintick) + " (" + str.tostring(tp2RR, "#.#") + "R)",
+             text_color=color.new(#2E7D32, 20), text_size=size.tiny,
+             text_halign=text.align_right, text_valign=text.align_bottom,
+             force_overlay=true)
+        array.push(tpslBoxes, tp2Box)
+
+    cleanOldBoxes(maxTPSLBoxes)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ ALERTS v4.2
+// ══════════════════════════════════════════════════════════════════════════════
+
+float alertScoreMin = input.float(4.0, "Minimum score for alert", minval=2.0, maxval=10.0, step=0.5, group="🔔 Alerts v4.2")
+bool  alertModerate = input.bool(true, "Moderate alert (4-5.5)", group="🔔 Alerts v4.2")
+bool  alertStrong   = input.bool(true, "Strong alert (6-7.5)", group="🔔 Alerts v4.2")
+bool  alertVStrong  = input.bool(true, "Very strong alert (8-9.5)", group="🔔 Alerts v4.2")
+bool  alertMax      = input.bool(true, "Exceptional alert (10)", group="🔔 Alerts v4.2")
+
+bool bullModerate = bullSignal and adjScoreBull >= 4.0 and adjScoreBull < 6.0
+bool bullStrong   = bullSignal and adjScoreBull >= 6.0 and adjScoreBull < 8.0
+bool bullVStrong  = bullSignal and adjScoreBull >= 8.0 and adjScoreBull < 10.0
+bool bullMax      = bullSignal and adjScoreBull >= 10.0
+bool bullAlertMin = bullSignal and adjScoreBull >= alertScoreMin
+
+bool bearModerate = bearSignal and adjScoreBear >= 4.0 and adjScoreBear < 6.0
+bool bearStrong   = bearSignal and adjScoreBear >= 6.0 and adjScoreBear < 8.0
+bool bearVStrong  = bearSignal and adjScoreBear >= 8.0 and adjScoreBear < 10.0
+bool bearMax      = bearSignal and adjScoreBear >= 10.0
+bool bearAlertMin = bearSignal and adjScoreBear >= alertScoreMin
+
+alertcondition((bullSignal or bearSignal) and showCross, "TSI Filtered Signal", "TSI-AS 4.2: Signal — Price: {{close}}")
+alertcondition(useMomentumMode and (momEntryBull or momEntryBear), "⚡ Extreme Zone Entry", "TSI-AS 4.2: Extreme zone entry — Price: {{close}}")
+alertcondition(useMomentumMode and (momDeepBull or momDeepBear), "💀 Deep Zone", "TSI-AS 4.2: Deep zone — Price: {{close}}")
+alertcondition((bullDiv or bearDiv) and showDiverg, "TSI Divergence", "TSI-AS 4.2: DIVERGENCE — Price: {{close}}")
+alertcondition((bullModerate or bearModerate) and alertModerate, "⚡ Moderate Signal (4-5.5)", "TSI-AS 4.2: Moderate Signal — Price: {{close}}")
+alertcondition((bullStrong or bearStrong) and alertStrong, "🔥 Strong Signal (6-7.5)", "TSI-AS 4.2: STRONG Signal — Price: {{close}}")
+alertcondition((bullVStrong or bearVStrong) and alertVStrong, "💎 Very Strong Signal (8-9.5)", "TSI-AS 4.2: VERY STRONG Signal — Price: {{close}}")
+alertcondition((bullMax or bearMax) and alertMax, "🏆 Exceptional Signal (10)", "TSI-AS 4.2: MAXIMUM Signal — Price: {{close}}")
+alertcondition(bullAlertMin or bearAlertMin, "🎯 SIGNAL Score ≥ Threshold", "TSI-AS 4.2: SIGNAL — Score ≥ threshold — Price: {{close}}")
+alertcondition(useStructure and (structEvent == 3 or structEvent == 4), "CHoCH Detected", "TSI-AS 4.2: CHoCH — Price: {{close}}")
+alertcondition(isTransition and (bullSignal or bearSignal), "🔄 TRANSITION Signal", "TSI-AS 4.2: TRANSITION — Price: {{close}}")
+// 🆕 v4.2: Consolidation alert
+alertcondition(isConsolidation and not isConsolidation[1], "🛡️ Consolidation Entry", "TSI-AS 4.2: CONSOLIDATION detected — Caution with signals")
+alertcondition(not isConsolidation and isConsolidation[1], "🚀 Consolidation Exit", "TSI-AS 4.2: CONSOLIDATION exit — Potential breakout")
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ COLORS
+// ══════════════════════════════════════════════════════════════════════════════
+
+color colBull    = input.color(#089981, "Bullish Color", group="🎨 Colors")
+color colBear    = input.color(#F23645, "Bearish Color", group="🎨 Colors")
+color colSignal  = input.color(#E65100, "Signal Color", group="🎨 Colors")
+color colNeutral = input.color(#546E7A, "Neutral Color", group="🎨 Colors")
+color colHTF     = input.color(#1565C0, "TSI HTF Color", group="🎨 Colors")
+color colMom     = input.color(#FF6F00, "Pure Momentum Color", group="🎨 Colors")
+
+color tsiColor = tsi > sig ? colBull : colBear
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ OSCILLATOR PANE — Direct TSI plots in the separate window
+// ══════════════════════════════════════════════════════════════════════════════
+
+hline(0, "Zero Line", color=color.new(colNeutral, 60), linestyle=hline.style_solid, linewidth=1)
+
+plot(dynOB, "OB Threshold", color.new(colBear, 70), linewidth=1, style=plot.style_stepline)
+plot(dynOS, "OS Threshold", color.new(colBull, 70), linewidth=1, style=plot.style_stepline)
+
+plot(useMomentumMode ? deepOB : na, "Deep OB", color.new(colBear, 85), linewidth=1, style=plot.style_circles)
+plot(useMomentumMode ? deepOS : na, "Deep OS", color.new(colBull, 85), linewidth=1, style=plot.style_circles)
+
+plot(tsi, "TSI", tsiColor, linewidth=2)
+plot(sig, "Signal", colSignal, linewidth=1)
+plot(useMTF ? tsiHTF : na, "TSI HTF", color.new(colHTF, 60), linewidth=1, style=plot.style_stepline)
+
+color histCol = hist > 0 ? (hist > hist[1] ? colBull : color.new(colBull, 60)) : (hist < hist[1] ? colBear : color.new(colBear, 60))
+plot(showHist ? hist : na, "Histogram", histCol, linewidth=1, style=plot.style_columns)
+
+color histMomCol = histMom > 0 ? color.new(#00838F, 30) : color.new(#AB47BC, 30)
+plot(showHistMom ? histMom * 3 : na, "Momentum Derivative", histMomCol, linewidth=1, style=plot.style_columns)
+
+bgcolor(tsi > dynOB ? (tsi > deepOB ? color.new(colBear, 86) : color.new(colBear, 94)) : na, title="BG OB Zone")
+bgcolor(tsi < dynOS ? (tsi < deepOS ? color.new(colBull, 86) : color.new(colBull, 94)) : na, title="BG OS Zone")
+
+plotshape(showZeroCross and zeroBullCross ? 0.0 : na, "Zero Cross ▲", shape.triangleup, location.absolute, color.new(colBull, 40), size=size.tiny)
+plotshape(showZeroCross and zeroBearCross ? 0.0 : na, "Zero Cross ▼", shape.triangledown, location.absolute, color.new(colBear, 40), size=size.tiny)
+
+plotshape(bullSignal ? tsi : na, "Buy Signal (osc)", shape.circle, location.absolute, color.new(colBull, 20), size=size.tiny)
+plotshape(bearSignal ? tsi : na, "Sell Signal (osc)", shape.circle, location.absolute, color.new(colBear, 20), size=size.tiny)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ OVERLAY DISPLAY — Signals on candles (force_overlay=true)
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Session BG
+color sessionBGCol = na
+if showSessionBG and useSessionFilter and not timeframe.isdwm
+    if isNYOpenChaos and filterNYOpen
+        sessionBGCol := color.new(#FF6F00, 95)
+    else if isOverlap
+        sessionBGCol := color.new(#FFD600, 96)
+    else if isLondon
+        sessionBGCol := color.new(#1565C0, 97)
+    else if isNY
+        sessionBGCol := color.new(#E65100, 97)
+    else if isTokyoOpen
+        sessionBGCol := color.new(#E040FB, 96)
+    else if isAsia
+        sessionBGCol := color.new(#7B1FA2, 97)
+bgcolor(sessionBGCol, title="BG Session", force_overlay=true)
+
+// Crossover signals
+plotshape(showCross and bullSignalCross ? low : na, "Buy Cross ▲", shape.triangleup, location.absolute, colBull, size=size.small, force_overlay=true)
+plotshape(showCross and bearSignalCross ? high : na, "Sell Cross ▼", shape.triangledown, location.absolute, colBear, size=size.small, force_overlay=true)
+
+// Pure Momentum signals
+plotshape(showMomExit and bullSignalMom ? low : na, "Buy MOM ◆", shape.diamond, location.absolute, colMom, size=size.small, force_overlay=true)
+plotshape(showMomExit and bearSignalMom ? high : na, "Sell MOM ◆", shape.diamond, location.absolute, colMom, size=size.small, force_overlay=true)
+
+// Extreme zone entry
+plotshape(showMomEntry and useMomentumMode and momEntryBull ? low : na, "→ Oversold", shape.arrowdown, location.absolute, color.new(colBear, 30), size=size.tiny, force_overlay=true)
+plotshape(showMomEntry and useMomentumMode and momEntryBear ? high : na, "→ Overbought", shape.arrowup, location.absolute, color.new(colBull, 30), size=size.tiny, force_overlay=true)
+
+// Deep momentum
+plotshape(showMomDeep and useMomentumMode and momDeepBull ? low : na, "Deep Oversold ✕", shape.xcross, location.absolute, color.new(#D50000, 20), size=size.tiny, force_overlay=true)
+plotshape(showMomDeep and useMomentumMode and momDeepBear ? high : na, "Deep Overbought ✕", shape.xcross, location.absolute, color.new(#D50000, 20), size=size.tiny, force_overlay=true)
+
+// Divergences
+plotshape(showDiverg and bullDiv ? low[pivotLB] : na, "Bullish Div.", shape.diamond, location.absolute, #00838F, size=size.tiny, offset=-pivotLB, force_overlay=true)
+plotshape(showDiverg and bearDiv ? high[pivotLB] : na, "Bearish Div.", shape.diamond, location.absolute, #AB47BC, size=size.tiny, offset=-pivotLB, force_overlay=true)
+
+// Structure BOS/CHoCH
+if showStructure and useStructure
+    if structEvent == 1
+        label.new(bar_index, high, "BOS↑", color=color.new(colBOS_Bull, 20), textcolor=#FFFFFF, style=label.style_label_down, size=size.tiny, force_overlay=true)
+    if structEvent == 2
+        label.new(bar_index, low, "BOS↓", color=color.new(colBOS_Bear, 20), textcolor=#FFFFFF, style=label.style_label_up, size=size.tiny, force_overlay=true)
+    if structEvent == 3
+        label.new(bar_index, high, "CHoCH↑", color=color.new(colCHoCH_Bull, 10), textcolor=#FFFFFF, style=label.style_label_down, size=size.small, force_overlay=true)
+    if structEvent == 4
+        label.new(bar_index, low, "CHoCH↓", color=color.new(colCHoCH_Bear, 10), textcolor=#FFFFFF, style=label.style_label_up, size=size.small, force_overlay=true)
+
+// Swing lines
+var line swHighLine = na
+var line swLowLine  = na
+
+if showSwingLines and useStructure
+    if not na(swHigh)
+        if not na(swHighLine)
+            line.delete(swHighLine)
+        swHighLine := line.new(bar_index - swingLookback, swHigh, bar_index, swHigh, color=color.new(colBOS_Bear, 60), style=line.style_dashed, extend=extend.right, force_overlay=true)
+    if not na(swLow)
+        if not na(swLowLine)
+            line.delete(swLowLine)
+        swLowLine := line.new(bar_index - swingLookback, swLow, bar_index, swLow, color=color.new(colBOS_Bull, 60), style=line.style_dashed, extend=extend.right, force_overlay=true)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ PRICE LABELS ON STRONG SIGNALS (v4.2: with volume info + R:R)
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool showPriceLabels = input.bool(true, "Price labels on strong signals", group="📊 Signals v4.2")
+float labelMinScore  = input.float(4.0, "Min. score for label", minval=1.0, maxval=10.0, step=0.5, group="📊 Signals v4.2")
+
+if showPriceLabels and bullSignal and adjScoreBull >= labelMinScore
+    string typeTag = bullSignalCross ? "C" : "M"
+    string biasTag = isAligned ? "A" : isDivergent ? "D" : ""
+    // 🆕 v4.2: Volume indicator in label
+    string volTag = useVolFilter ? (volIsStrong ? " V↑" : volIsWeak ? " V↓" : "") : ""
+    // 🆕 v4.2: Consolidation indicator
+    string consolTag = isConsolidation ? " ⚠R" : ""
+    string lbl = str.tostring(close, format.mintick) + "\n★" + str.tostring(adjScoreBull, "#.#") + "/10 " + typeTag + biasTag + volTag + consolTag
+    label.new(bar_index, low, lbl, color=color.new(colBull, 20), textcolor=#FFFFFF, style=label.style_label_up, size=size.small, force_overlay=true)
+
+if showPriceLabels and bearSignal and adjScoreBear >= labelMinScore
+    string typeTag = bearSignalCross ? "C" : "M"
+    string biasTag = isAligned ? "A" : isDivergent ? "D" : ""
+    string volTag = useVolFilter ? (volIsStrong ? " V↑" : volIsWeak ? " V↓" : "") : ""
+    string consolTag = isConsolidation ? " ⚠R" : ""
+    string lbl = str.tostring(close, format.mintick) + "\n★" + str.tostring(adjScoreBear, "#.#") + "/10 " + typeTag + biasTag + volTag + consolTag
+    label.new(bar_index, high, lbl, color=color.new(colBear, 20), textcolor=#FFFFFF, style=label.style_label_down, size=size.small, force_overlay=true)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ TREND EMA (displayed on the price chart)
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool showEMAOnChart = input.bool(true, "Show Trend EMA on chart", group="📈 Trend Filter")
+color emaColor = trendUp ? color.new(colBull, 40) : color.new(colBear, 40)
+plot(showEMAOnChart ? emaVal : na, "Trend EMA", emaColor, linewidth=2, force_overlay=true)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ INFORMATION DASHBOARD v4.2 (with Volume + Consolidation + R:R lines)
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool showTable = input.bool(true, "Show Info Dashboard", group="📋 Dashboard")
+string tblPos  = input.string("top_right", "Dashboard Position", options=["top_right", "top_left", "bottom_right", "bottom_left"], group="📋 Dashboard")
+string tblSize = input.string("small", "Text size", options=["tiny", "small", "normal"], group="📋 Dashboard")
+
+var table infoTbl = na
+
+if showTable and barstate.islast
+    tblPosition = switch tblPos
+        "top_right"    => position.top_right
+        "top_left"     => position.top_left
+        "bottom_right" => position.bottom_right
+        "bottom_left"  => position.bottom_left
+        => position.top_right
+
+    infoTbl := table.new(tblPosition, 2, 32, bgcolor=color.new(#F5F5F5, 5), border_color=color.new(#B0BEC5, 30), border_width=1, force_overlay=true)
+
+    txtSize = switch tblSize
+        "tiny"   => size.tiny
+        "small"  => size.small
+        "normal" => size.normal
+        => size.small
+
+    int row = 0
+
+    table.cell(infoTbl, 0, row, "TSI Adaptive Scalper v4.2 OVL-SP", text_color=#FFFFFF, text_size=txtSize, bgcolor=color.new(#0D47A1, 10))
+    table.merge_cells(infoTbl, 0, row, 1, row)
+    row += 1
+
+    table.cell(infoTbl, 0, row, "TF Profile", text_color=#546E7A, text_size=txtSize)
+    string tfLabel = useManual ? "MANUAL" : (tfModeInput != "Auto" ? tfModeInput : tfClassLabel)
+    color tfLabelCol = switch activeTF
+        1 => #E65100
+        2 => #2E7D32
+        3 => #6A1B9A
+        4 => #1565C0
+        5 => #00838F
+        6 => #4E342E
+        => #546E7A
+    table.cell(infoTbl, 1, row, tfLabel, text_color=tfLabelCol, text_size=txtSize)
+    row += 1
+
+    table.cell(infoTbl, 0, row, "Instrument", text_color=#546E7A, text_size=txtSize)
+    string modeLabel = useManual ? "MANUAL" : (modeInput != "Auto" ? modeInput : assetLabel)
+    table.cell(infoTbl, 1, row, modeLabel, text_color=#212121, text_size=txtSize)
+    row += 1
+
+    table.cell(infoTbl, 0, row, "Long / Short", text_color=#546E7A, text_size=txtSize)
+    string adaptLabel = str.tostring(fLong) + " / " + str.tostring(fShort)
+    if useAdaptTSI and not useManual
+        adaptLabel += " ⚡"
+    table.cell(infoTbl, 1, row, adaptLabel, text_color=#212121, text_size=txtSize)
+    row += 1
+
+    table.cell(infoTbl, 0, row, "Signal", text_color=#546E7A, text_size=txtSize)
+    table.cell(infoTbl, 1, row, str.tostring(fSignal), text_color=#212121, text_size=txtSize)
+    row += 1
+
+    if useAdaptTSI and not useManual
+        table.cell(infoTbl, 0, row, "Adapt. Alpha", text_color=#546E7A, text_size=txtSize)
+        color adaptCol = adaptAlpha > 0.65 ? #E65100 : adaptAlpha < 0.35 ? #1565C0 : #546E7A
+        string adaptStr = str.tostring(adaptAlpha, "#.##")
+        adaptStr += adaptAlpha > 0.65 ? " REACTIVE" : adaptAlpha < 0.35 ? " SMOOTHED" : " NORMAL"
+        table.cell(infoTbl, 1, row, adaptStr, text_color=adaptCol, text_size=txtSize)
+        row += 1
+
+    table.cell(infoTbl, 0, row, "OB / OS dyn.", text_color=#546E7A, text_size=txtSize)
+    table.cell(infoTbl, 1, row, str.tostring(dynOB, "#.#") + " / " + str.tostring(dynOS, "#.#"), text_color=#212121, text_size=txtSize)
+    row += 1
+
+    if useMomentumMode
+        table.cell(infoTbl, 0, row, "Deep OB/OS", text_color=#546E7A, text_size=txtSize)
+        table.cell(infoTbl, 1, row, str.tostring(deepOB, "#.#") + " / " + str.tostring(deepOS, "#.#"), text_color=color.new(#D50000, 30), text_size=txtSize)
+        row += 1
+
+    table.cell(infoTbl, 0, row, "Vol. Ratio", text_color=#546E7A, text_size=txtSize)
+    color volCol = clampedVol > 1.2 ? colBear : clampedVol < 0.8 ? colBull : #546E7A
+    table.cell(infoTbl, 1, row, str.tostring(clampedVol, "#.##"), text_color=volCol, text_size=txtSize)
+    row += 1
+
+    // 🆕 v4.2: Relative Volume line
+    if useVolFilter
+        table.cell(infoTbl, 0, row, "Rel. Volume", text_color=#546E7A, text_size=txtSize)
+        color volRelCol = volIsStrong ? #00695C : volIsWeak ? #C62828 : #546E7A
+        string volRelStr = str.tostring(volRelative, "#.##") + "×"
+        volRelStr += volIsStrong ? " ★ STRONG" : volIsWeak ? " ✗ WEAK" : " NORMAL"
+        table.cell(infoTbl, 1, row, volRelStr, text_color=volRelCol, text_size=txtSize)
+        row += 1
+
+    // 🆕 v4.2: Anti-Whipsaw / Consolidation line
+    if useAntiWhipsaw
+        table.cell(infoTbl, 0, row, "BB Width", text_color=#546E7A, text_size=txtSize)
+        color consolCol = isConsolidation ? #FF6F00 : #546E7A
+        string consolStr = str.tostring(bbWidth, "#.##") + "% (thr " + str.tostring(consolThr, "#.##") + "%)"
+        consolStr += isConsolidation ? " ⚠ RANGE" : " ✓ TREND"
+        table.cell(infoTbl, 1, row, consolStr, text_color=consolCol, text_size=txtSize)
+        row += 1
+
+    table.cell(infoTbl, 0, row, "TSI", text_color=#546E7A, text_size=txtSize)
+    table.cell(infoTbl, 1, row, str.tostring(tsi, "#.##"), text_color=tsiColor, text_size=txtSize)
+    row += 1
+
+    table.cell(infoTbl, 0, row, "TSI HTF (" + mtfTF + ")", text_color=#546E7A, text_size=txtSize)
+    color htfCol = tsiHTF > 0 ? colBull : colBear
+    table.cell(infoTbl, 1, row, str.tostring(tsiHTF, "#.##"), text_color=htfCol, text_size=txtSize)
+    row += 1
+
+    table.cell(infoTbl, 0, row, "Bias", text_color=#546E7A, text_size=txtSize)
+    string biasStr = "—"
+    color  biasCl  = #546E7A
+    if useBiasComposite
+        biasStr := (compositeBias > 0 ? "↑ BULL " : compositeBias < 0 ? "↓ BEAR " : "— ") + biasState
+        biasCl  := isAligned ? (compositeBias > 0 ? #00695C : #C62828) : isDivergent ? #FF6F00 : isTransition ? #6A1B9A : #546E7A
+    table.cell(infoTbl, 1, row, biasStr, text_color=biasCl, text_size=txtSize)
+    row += 1
+
+    table.cell(infoTbl, 0, row, "Structure", text_color=#546E7A, text_size=txtSize)
+    string structStr = useStructure ? (structBullish ? "↑ BULLISH" : structBearish ? "↓ BEARISH" : "— NEUTRAL") : "—"
+    color  structCol = useStructure ? (structBullish ? colBull : structBearish ? colBear : #546E7A) : #546E7A
+    if useStructure and structIsFresh
+        structStr += " ★"
+    table.cell(infoTbl, 1, row, structStr, text_color=structCol, text_size=txtSize)
+    row += 1
+
+    table.cell(infoTbl, 0, row, "EMA (" + str.tostring(emaLenFinal) + ")", text_color=#546E7A, text_size=txtSize)
+    string trendStr = trendUp ? "↑ BULLISH" : "↓ BEARISH"
+    color  trendCol = trendUp ? colBull : colBear
+    table.cell(infoTbl, 1, row, trendStr, text_color=trendCol, text_size=txtSize)
+    row += 1
+
+    table.cell(infoTbl, 0, row, "ADX (thr " + str.tostring(adxThFinal, "#.#") + ")", text_color=#546E7A, text_size=txtSize)
+    color adxCol = isTrending ? colBull : color.new(#546E7A, 30)
+    string adxStr = str.tostring(adxVal, "#.#") + (isTrending ? " ✓" : " ✗") + (useADXSmooth ? " [S]" : "")
+    table.cell(infoTbl, 1, row, adxStr, text_color=adxCol, text_size=txtSize)
+    row += 1
+
+    table.cell(infoTbl, 0, row, "Session", text_color=#546E7A, text_size=txtSize)
+    string sessStr = "DISABLED"
+    color  sessCol = #B0BEC5
+    if useSessionFilter
+        if isNYOpenChaos and filterNYOpen
+            sessStr := "NY OPEN ⚠ ×" + str.tostring(sessionMultiplier, "#.##")
+            sessCol := #FF6F00
+        else if isOverlap
+            sessStr := "OVERLAP ×" + str.tostring(sessionMultiplier, "#.##")
+            sessCol := #FFD600
+        else if isLondon
+            sessStr := "LONDON ×" + str.tostring(sessionMultiplier, "#.##")
+            sessCol := #1565C0
+        else if isNY
+            sessStr := "NEW YORK ×" + str.tostring(sessionMultiplier, "#.##")
+            sessCol := #E65100
+        else if isTokyoOpen
+            sessStr := "TOKYO OPEN ×" + str.tostring(sessionMultiplier, "#.##")
+            sessCol := #E040FB
+        else if isAsia
+            sessStr := "ASIA ×" + str.tostring(sessionMultiplier, "#.##")
+            sessCol := #7B1FA2
+        else
+            sessStr := "OFF SESSION ×" + str.tostring(sessionMultiplier, "#.##")
+            sessCol := #B0BEC5
+    table.cell(infoTbl, 1, row, sessStr, text_color=sessCol, text_size=txtSize)
+    row += 1
+
+    table.cell(infoTbl, 0, row, "Cooldown", text_color=#546E7A, text_size=txtSize)
+    string cdLabel = str.tostring(math.round(cdDynamic)) + " bars"
+    if useStructuralCD
+        cdLabel += " (ATR)"
+    if isConsolidation and useAntiWhipsaw
+        cdLabel += " ×" + str.tostring(consolCDMult, "#.#")
+    table.cell(infoTbl, 1, row, cdLabel, text_color=#212121, text_size=txtSize)
+    row += 1
+
+    table.cell(infoTbl, 0, row, "Cross Slope", text_color=#546E7A, text_size=txtSize)
+    color slopeCol = crossSlope >= slopeStrong ? #00897B : crossSlope >= slopeMin ? #E65100 : #B0BEC5
+    string slopeQual = crossSlope >= slopeStrong ? " ★★" : crossSlope >= slopeMin ? " ★" : " ✗"
+    table.cell(infoTbl, 1, row, str.tostring(crossSlope, "#.##") + slopeQual, text_color=slopeCol, text_size=txtSize)
+    row += 1
+
+    table.cell(infoTbl, 0, row, "RSI (" + str.tostring(rsiLen) + ")", text_color=#546E7A, text_size=txtSize)
+    color rsiCol = rsiVal > 70 ? colBear : rsiVal < 30 ? colBull : #212121
+    table.cell(infoTbl, 1, row, str.tostring(rsiVal, "#.#"), text_color=rsiCol, text_size=txtSize)
+    row += 1
+
+    table.cell(infoTbl, 0, row, "Raw Score", text_color=#546E7A, text_size=txtSize)
+    float rawDisplay = rawScoreBull > rawScoreBear ? rawScoreBull : rawScoreBear
+    string rawDirDisplay = rawScoreBull > rawScoreBear ? "↑" : rawScoreBear > rawScoreBull ? "↓" : "—"
+    table.cell(infoTbl, 1, row, rawDisplay > 0 ? str.tostring(rawDisplay, "#.#") + " " + rawDirDisplay : "—", text_color=#78909C, text_size=txtSize)
+    row += 1
+
+    table.cell(infoTbl, 0, row, "Score /10", text_color=#546E7A, text_size=txtSize)
+    color scoreCol = activeScore >= 8.0 ? #00695C : activeScore >= 6.0 ? #00897B : activeScore >= 4.0 ? #E65100 : activeScore >= 1.0 ? #212121 : #546E7A
+    string scoreStr = activeScore > 0 ? str.tostring(activeScore, "#.#") + "/10 " + scoreDir : "—"
+    // 🆕 v4.2: Consolidation marker in score
+    if isConsolidation and useAntiWhipsaw and activeScore > 0
+        scoreStr += " ⚠R"
+    table.cell(infoTbl, 1, row, scoreStr, text_color=scoreCol, text_size=txtSize)
+    row += 1
+
+    table.cell(infoTbl, 0, row, "Alert ≥", text_color=#546E7A, text_size=txtSize)
+    table.cell(infoTbl, 1, row, str.tostring(alertScoreMin, "#.#"), text_color=#1565C0, text_size=txtSize)
+    row += 1
+
+    table.cell(infoTbl, 0, row, "Last Signal", text_color=#546E7A, text_size=txtSize)
+    color freshCol = barsSinceLast <= 3 ? #00897B : barsSinceLast <= 10 ? #E65100 : #B0BEC5
+    string freshStr = lastSignalDir != "—" ? lastSignalDir + " " + str.tostring(barsSinceLast) + " bars ago" : "—"
+    table.cell(infoTbl, 1, row, freshStr, text_color=freshCol, text_size=txtSize)
+    row += 1
+
+    string state = tsi > deepOB ? "🔥 DEEP OVERBOUGHT" : tsi > dynOB ? "⚠ OVERBOUGHT" : tsi < deepOS ? "🔥 DEEP OVERSOLD" : tsi < dynOS ? "⚠ OVERSOLD" : tsi > 0 ? "↑ BULLISH" : "↓ BEARISH"
+    color stateCol = tsi > dynOB ? colBear : tsi < dynOS ? colBull : tsi > 0 ? colBull : colBear
+    table.cell(infoTbl, 0, row, "State", text_color=#546E7A, text_size=txtSize)
+    table.cell(infoTbl, 1, row, state, text_color=stateCol, text_size=txtSize)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ▌ END — TSI Adaptive Scalper v4.2 OVL-SP © s47marsac
+// ══════════════════════════════════════════════════════════════════════════════
