@@ -1,4 +1,7 @@
-
+---
+description: How to use the Indicator as a Strategy
+tags: ["TradingView", "Trading", "RSI",  ]
+---
 # Indicators to Strategy Blueprint
 
 The provided Pine Script is a visual tool designed to identify the highest and lowest price points within the user's visible chart area. This functionality, relying on `chart.left_visible_bar_time`, is inherently subjective and cannot be used for automated execution, as a server-side algorithm has no concept of a "visible screen."
