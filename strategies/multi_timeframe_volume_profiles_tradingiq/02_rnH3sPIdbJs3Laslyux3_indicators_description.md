@@ -3,68 +3,57 @@
 
 ### 1. Component Deconstruction
 
-The script's architecture is centered on a custom-built, multi-timeframe volume profiling engine. It does not use standard library indicators like RSI or EMA; instead, it constructs its analytical tools from raw price and volume data.
+The script's architecture is centered around a single, highly configurable, custom-built component: a **Multi-Timeframe Volume Profile Engine**. It does not use standard Pine Script® indicators like RSI or EMA. Instead, it constructs its own market studies from raw price and volume data.
 
-#### **A. Core Engine: Volume Profile**
-
-This is a bespoke implementation, not a built-in TradingView function. Its mechanics are as follows:
+#### **Volume Profile Engine**
 
 *   **Specific Configuration:**
-    *   **Vertical Resolution:** Controlled by `rows` (default: 20). This integer dictates the number of horizontal price bins the total price range of a period is divided into. A higher number increases the granularity of the profile at the cost of computational intensity.
-    *   **Price Range Source:** The engine dynamically calculates the high and low of the selected higher timeframe (`HTF`) period (e.g., the last 60 minutes). This range (`htfH` - `htfL`) is then divided by `rows` to determine the height of each price bin.
-    *   **Volume Data Source:** The engine's key feature is its use of `request.security_lower_tf`. It fetches `high`, `low`, and `volume` data from a user-defined lower timeframe (`lowerTF`, default: "1"). This provides a high-fidelity data set for constructing the profile, as opposed to using the single volume value from the higher timeframe bar.
+    *   **Model:** The engine has two primary operational modes selected via `input.enum`:
+        1.  `Traditional Volume Profile`: Measures the total volume transacted at each price level.
+        2.  `Delta Profile`: Measures the net difference between "buying" and "selling" volume at each price level.
+    *   **Profile Granularity (`rows`):** The vertical resolution of the profile. The total price range of a high-timeframe (HTF) period is divided into this number of discrete price bins. Default is `20`.
+    *   **Data Timeframes:** The script can run up to five independent profile calculations simultaneously (`htf1` through `htf5`). Each is configured with:
+        *   **`htf` (Higher Timeframe):** The period over which the profile is built (e.g., "240" for 4-hour, "1D" for daily).
+        *   **`lowerTF` (Lower Timeframe):** The timeframe from which volume data is sourced. Default is `"1"` (1-minute). This is a critical configuration for data fidelity.
 
-*   **Functional Modification:** The script offers two distinct mathematical models for processing volume, selected via the `model` input.
-
-    1.  **Traditional Volume Profile (`regVP`):**
-        *   **Mathematical Logic:** In this mode, the script calculates total buying and selling volume for each price row. The `direction()` function determines if a lower-timeframe bar's volume is "buying" or "selling" based on a simple up-tick/down-tick proxy: `math.sign(close - close[1])`. The absolute value of this signed volume is then added to the `buyVol` or `sellVol` array for each price row the bar touched. The `totalVol` is the sum of `buyVol` and `sellVol`.
-        *   **Intended Effect:** This provides a classic volume-at-price histogram, separating volume into buying and selling pressure for visual analysis of supply and demand at specific levels.
-
-    2.  **Delta Profile (`deltaVP`):**
-        *   **Mathematical Logic:** This model focuses on the *net difference* between buying and selling pressure. The `direction()` function again produces a signed volume (+V for buying, -V for selling). The `setVals` method adds this signed value directly to the `delta` array for each relevant price row. The `totalVol` array still accumulates the absolute volume.
-        *   **Intended Effect:** This model is designed to reveal the net aggressive activity at each price level. A large positive delta at a level indicates a strong dominance of buyers, while a large negative delta indicates seller dominance. A delta near zero on a high-volume node suggests absorption and two-sided trade. This serves as a conviction filter.
-
-#### **B. Derived Study: Value Area (VA)**
-
-*   **Specific Configuration:**
-    *   **Threshold:** The Value Area is calculated using a hard-coded constant of **70%** of the total volume for the period (`target = htfProfile.totalVol.sum() * 0.7`).
-*   **Functional Modification (Algorithmic Implementation):**
-    1.  The Point of Control (POC)—the price row with the maximum `totalVol`—is identified.
-    2.  An iterative algorithm begins at the POC, summing its volume.
-    3.  It then expands outwards, alternately adding the volume from the price row above and the price row below the currently included range.
-    4.  This process continues until the accumulated volume sum (`sum`) meets or exceeds the 70% `target`.
-    5.  The highest price level in this range becomes the Value Area High (VAH) and the lowest becomes the Value Area Low (VAL). This is a standard, industry-accepted method for VA calculation.
-
-#### **C. Derived Study: Point of Control (POC)**
-
-*   **Specific Configuration:** The POC is defined as the single price row with the maximum value in the `totalVol` array.
-*   **Functional Modification:** There is no modification to the standard definition. The script finds it using `htfProfile.totalVol.indexof(htfProfile.totalVol.max())` to locate the index of the highest volume and then retrieves the corresponding price level.
+*   **Functional Modification (Non-Standard Mechanics):**
+    *   **Data Sourcing via `request.security_lower_tf`:** This is the script's core "hack." Instead of using the volume from the HTF bars (e.g., one volume value for a 4-hour bar), it requests an array of all volume data from a much smaller timeframe (e.g., all 240 one-minute bars within that 4-hour period). This provides a high-fidelity dataset to construct a more accurate profile, as it captures the intraday distribution of volume which would otherwise be lost.
+    *   **Volume Directionality (Delta Calculation):** The `direction()` function approximates order flow aggression.
+        *   **For Tick Timeframe (`1T`):** It uses `close == bid` (seller-initiated trade) and `close == ask` (buyer-initiated trade) to determine direction. This is the most precise method available in Pine Script for assessing delta.
+        *   **For All Other Timeframes:** It uses a standard uptick/downtick rule: `math.sign(close - close[1])`. A positive result implies buying pressure, and a negative result implies selling pressure. The volume from the `lowerTF` bar is then signed (+ or -) based on this result.
+    *   **Volume Distribution (`setVals` method):** When a single `lowerTF` bar's range (`high` - `low`) spans multiple price bins (`rows`), the script divides that bar's volume equally among all the bins it touches (`div = data.V / (math.abs(upLev - dnLev) + 1)`). This is a volume-smoothing and distribution algorithm to prevent a single large-range bar from allocating all its volume to just one or two bins.
+    *   **Value Area (VA) & Point of Control (POC) Algorithm:**
+        1.  **POC:** Identified by finding the index of the price bin with the maximum `totalVol` (`htfProfile.totalVol.indexof(htfProfile.totalVol.max())`).
+        2.  **VA:** Calculated by taking the total volume for the entire profile, multiplying it by `0.7` (a hard-coded 70% standard), and then expanding outwards (up and down) from the POC row, summing the volume of each new row until the 70% target is met. The highest price level in this range is the Value Area High (VAH) and the lowest is the Value Area Low (VAL).
 
 ### 2. Logic Layering & Confluence
 
-The script's filtering mechanism is not based on a sequence of indicator checks but on the simultaneous visualization of structural information across multiple timeframes.
+The script's filtering mechanism is not sequential or conditional in the traditional sense (e.g., `if conditionA then check conditionB`). Instead, it operates on the principle of **Visual and Locational Confluence**, where the trader, not the code, performs the final filtering step.
 
-*   **Interaction Dynamics:** The core principle is **Structural Confluence**. The script does not compute signals based on indicator interactions (e.g., `RSI > 50 AND VAH_Cross`). Instead, it renders up to five independent volume profiles, each representing a different timeframe. The analytical value is derived by the user visually identifying where key levels from different profiles align.
-    *   **Example:** A VAH on the 30-minute profile (`htf1`) gains significant analytical weight if it coincides with the POC of the 4-hour profile (`htf3`). This alignment suggests a micro-level resistance is reinforced by a macro-level area of accepted value, creating a high-probability zone for price reaction.
+*   **Interaction Dynamics:**
+    *   **Locational Convergence:** The core purpose of the script is to display up to five independent volume profiles side-by-side. The engine's primary "signal" is the visual alignment of key levels from these different profiles. A powerful setup occurs when the POC from the `htf1` ("30") profile aligns at the same price as the VAL from the `htf3` ("240") profile. This convergence of significant levels across different timeframes dramatically increases the perceived importance of that price zone. The script provides the map; the user identifies where the roads intersect.
+    *   **No Divergence Calculation:** The script does not compute price-vs-indicator divergences.
 
-*   **Hierarchical Filtering:** The script facilitates a visual hierarchy but does not enforce it programmatically.
-    *   **Macro Filter:** Higher timeframe profiles (e.g., Daily, Weekly) act as the macro context or "Gatekeeper." Their POC, VAH, and VAL levels define the significant structural zones for the entire session or week.
-    *   **Micro Triggers:** Lower timeframe profiles (e.g., 15-min, 30-min) show the intra-day auction's development. A trading setup is considered higher probability when price action at a micro-level (e.g., testing the 15-min VAL) occurs at a pre-defined macro-level support (e.g., the Daily VAL). The script provides the map for this analysis; the trader performs the filtering.
+*   **Hierarchical Filtering:**
+    *   **Gatekeeper #1 (Multi-Timeframe Structure):** The primary filter is the multi-timeframe analysis itself. A POC on a 30-minute profile is considered less significant than a price level that acts as a POC on the 30-minute, 4-hour, and Daily profiles simultaneously. The hierarchy is implicitly defined by the timeframe; longer timeframes carry more weight.
+    *   **Gatekeeper #2 (Delta Profile Mode):** Switching the `model` to `deltaVP` introduces a sophisticated secondary filter.
+        *   **Traditional Profile:** Answers "Where did volume trade?"
+        *   **Delta Profile:** Answers "Where were buyers or sellers more aggressive?"
+        *   This acts as a confirmation layer. For example, if price drops to a support level identified by a `Traditional Profile` POC, the trader can switch to `Delta Profile` mode. Seeing a large positive delta (green bars) at that level confirms that buyers are aggressively absorbing the selling pressure, validating a potential long entry. This filters out "support" levels where no significant buying response is actually occurring.
 
 ### 3. The Execution Engine
 
-This script is a decision-support tool, not an automated strategy. It has no "Execution Engine" in the traditional sense of generating `strategy.entry` or `alertcondition` calls. Its "engine" is purely for data processing and visualization, designed to inform a discretionary trader's execution.
+This script is a discretionary analysis tool, not an automated strategy. It has no "Execution Engine" that generates `true`/`false` buy or sell signals. The "trigger" is a cognitive event in the trader's mind based on the confluence of data presented.
 
-*   **Boolean Logic:** The primary logical condition governing the entire calculation and drawing process is `if barstate.islast`. This is a critical performance optimization. All intensive calculations—iterating through lower-timeframe data, building the profile arrays, calculating VA/POC, and managing drawing objects—are executed only once, on the last historical bar and on every real-time tick. This prevents the script from re-calculating the entire profile on every bar of the chart's history, which would be computationally prohibitive.
+*   **Boolean Logic (Discretionary Conditions):**
+    A discretionary "true" signal for a long entry would be the logical AND of the following observed conditions:
+    1.  `Price` is currently trading at or near a key HTF level (POC, VAH, or VAL).
+    2.  **AND** This level demonstrates **Locational Confluence** (i.e., it is also a key level on at least one other displayed HTF profile).
+    3.  **AND (if using Delta Profile)** The delta at this price level is positive, indicating buyer absorption is outweighing seller aggression.
 
-*   **Visual Triggers (Informing Execution):** The script's output is a set of visual levels that a trader uses as a basis for execution. The "triggers" are pattern-based:
-    *   **Level Test:** Price approaching a VAH, VAL, or POC.
-    *   **Level Rejection/Acceptance:** Candlestick patterns confirming a bounce from or a breakout through one of these levels.
-    *   **Confluence:** The trigger is amplified when the level being tested is significant on multiple timeframes simultaneously.
-    *   **Real-time Price Marker:** A small circle (`●`) is drawn at the price level corresponding to the current `close`, providing an immediate visual reference of where the current price is within the established volume structure.
-
-*   **Mathematical Constants:**
-    *   `0.7`: The 70% multiplier for the Value Area calculation. This is a market standard derived from statistical principles where ~68.3% of values fall within one standard deviation of the mean in a normal distribution. 70% is a widely accepted adaptation for market profiles.
-    *   `15`: Used in the normalization formula (`* 15`). This is a **cosmetic scaling factor**. It controls the maximum horizontal length of the drawn volume histograms, ensuring they fit neatly on the chart without excessive width. It has **no impact** on the analytical calculation of POC/VA or the script's risk profile; it only affects the visual representation of volume magnitude.
-    *   `bar_index + 49`, `+ 109`, `+ 169`, etc.: These are **horizontal plot offsets**. They are used to draw each of the five profiles in its own "lane" on the right side of the chart, preventing them from overlapping. They have no analytical meaning.
+*   **Mathematical Constants & Their Significance:**
+    *   **`0.7`:** The hard-coded multiplier used to calculate the Value Area. It defines the VA as the price range containing 70% of the session's volume, a widely accepted industry standard. This directly impacts the width of the calculated value area.
+    *   **`15`:** A visual normalization multiplier (`* 15`) used when calculating the horizontal length of the profile's bars (`normBuy`, `normSell`). This constant has **no impact on the trading logic** or the calculation of POC/VAH/VAL. Its sole purpose is to scale the profile's visual width for better readability on the chart.
+    *   **`bar_index + [offset]`:** The offsets used in the final `getHTFvals` calls (e.g., `bar_index + 49`, `bar_index + 109`) are purely for **visual positioning**. They shift each profile horizontally to the right, creating distinct columns on the chart and preventing them from overlapping. They have no analytical or mathematical significance for the profile's values.
+    *   **`20`:** The default value for `rows`. A lower number creates a low-resolution, "blocky" profile, while a higher number creates a high-resolution, granular profile. This directly influences the precision of the calculated POC, VAH, and VAL levels.
     

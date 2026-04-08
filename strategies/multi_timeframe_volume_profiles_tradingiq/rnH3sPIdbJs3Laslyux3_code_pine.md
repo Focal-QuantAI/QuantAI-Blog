@@ -1,3 +1,11 @@
+
+---
+description: "Pine Script Source Code for Multi Timeframe Volume Profiles [TradingIQ]"
+---
+
+# Source Code
+
+```pinescript
 // This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // © KioseffTrading
 
@@ -394,3 +402,6 @@ getHTFvals(htf2, bar_index + 109, bar_index + 119, lowerTF2, htfUse2)
 getHTFvals(htf3, bar_index + 169, bar_index + 179, lowerTF3, htfUse3)
 getHTFvals(htf4, bar_index + 229, bar_index + 239, lowerTF4, htfUse4)
 getHTFvals(htf5, bar_index + 289, bar_index + 299, lowerTF5, htfUse5)
+
+```
+
