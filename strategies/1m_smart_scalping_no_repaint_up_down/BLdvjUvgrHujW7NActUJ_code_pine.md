@@ -1,11 +1,8 @@
 
----
-description: "Pine Script Source Code for 1M Smart Scalping (No Repaint) - UP/DOWN"
----
-
 # Source Code
 
 ```pinescript
+
 //@version=5
 indicator("1M Smart Scalping (No Repaint) - UP/DOWN", overlay=true)
 
@@ -95,6 +92,7 @@ if down_signal
 // 📊 OPTIONAL: BACKGROUND TREND COLOR
 // =======================
 bgcolor(trend_up ? color.new(color.green, 90) : trend_down ? color.new(color.red, 90) : na)
+
 
 ```
 

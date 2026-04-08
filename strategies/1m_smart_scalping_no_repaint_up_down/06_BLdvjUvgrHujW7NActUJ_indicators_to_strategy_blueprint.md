@@ -1,170 +1,174 @@
 
 # Indicators to Strategy Blueprint
 
-Here is the transformation of the "1M Smart Scalping" indicator into a production-ready algorithmic trading framework.
+Here is the architectural breakdown for transitioning the "1M Smart Scalping" indicator into a production-grade automated execution framework.
 
 ### 1. Execution Triggers (Entry & Direction)
 
-The provided script's logic is sound but requires translation into explicit order commands. The core signals are generated from a confluence of trend, a specific 3-bar momentum pattern, a breakout, and avoidance of immediate support/resistance.
+The provided script's logic is based on a confluence of factors confirming a trend continuation after a brief pause. The execution must be precise to capture the intended momentum.
 
-*   **Long Entry Condition:** A long position will be initiated when `up_signal` becomes `true`. This requires all of the following conditions to be met on the most recently closed 1-minute bar:
-    1.  **Trend:** The established trend is up (current pivot low is higher than the previous pivot low).
-    2.  **Candle Pattern:** A specific three-bar sequence has occurred: a strong bullish candle two bars ago, a bearish retracement candle one bar ago, and a strong bullish candle on the current signal bar.
-    3.  **Confirmation:** The signal bar is also a breakout above the high of the last 5 bars.
-    4.  **Filter:** The closing price is not within an ATR-based proximity to the 10-bar resistance level.
+*   **Long Entry Condition (`long_condition`):** A long position is initiated when all of the following are true on the close of a 1-minute bar:
+    1.  **Confirmed Uptrend:** The most recent pivot low is higher than the previous pivot low.
+    2.  **Pullback Pattern:** The candle two bars ago was strongly bullish, the previous candle was bearish (a pullback), and the current candle is strongly bullish (resumption).
+    3.  **Momentum Breakout:** The current bar's high exceeds the highest high of the previous 5 bars.
+    4.  **Clearance:** The current close is not within a 0.5 ATR distance of the 10-bar resistance level, ensuring there is room to move.
 
-*   **Short Entry Condition:** A short position will be initiated when `down_signal` becomes `true`. This is the mirror logic:
-    1.  **Trend:** The established trend is down (current pivot high is lower than the previous pivot high).
-    2.  **Candle Pattern:** A three-bar sequence of strong bearish, bullish retracement, and strong bearish candles.
-    3.  **Confirmation:** The signal bar is a breakout below the low of the last 5 bars.
-    4.  **Filter:** The closing price is not within an ATR-based proximity to the 10-bar support level.
+*   **Short Entry Condition (`short_condition`):** A short position is initiated when all of the following are true on the close of a 1-minute bar:
+    1.  **Confirmed Downtrend:** The most recent pivot high is lower than the previous pivot high.
+    2.  **Rally-Fail Pattern:** The candle two bars ago was strongly bearish, the previous candle was bullish (a weak rally), and the current candle is strongly bearish (resumption).
+    3.  **Momentum Breakdown:** The current bar's low is below the lowest low of the previous 5 bars.
+    4.  **Clearance:** The current close is not within a 0.5 ATR distance of the 10-bar support level.
 
-*   **Execution Nuance:** The script correctly uses `barstate.isconfirmed`. This dictates that all logic is evaluated and orders are sent **at the close of the bar**. This is the only reliable way to execute a strategy based on non-repainting historical data (`[1]`, `[2]`) and ensures that backtest results align with potential live performance. Attempting to execute this logic intra-bar would lead to significant repainting and unreliable signals.
+*   **Execution Nuance:** The logic explicitly uses `barstate.isconfirmed`. This is a critical detail. It means signals are only valid **at the close of the bar**. Therefore, the execution model must be "Market-on-Open" of the next bar. Any attempt to execute mid-bar based on these signals would be a form of forward-testing and would not align with the backtested results. The strategy must be configured to `process_orders_on_close = true`.
 
-*   **Signal Reversals:** For a scalping strategy, immediate position flips are critical. If the system is in a long position and a `down_signal` occurs, the framework must execute two orders in sequence:
-    1.  `strategy.close("Long")`: An order to close the existing long position at the market.
-    2.  `strategy.entry("Short", strategy.short)`: An order to open a new short position.
-    This ensures risk and position size are recalculated for the new trade direction, rather than simply reversing the existing position.
+*   **Signal Reversals:** Given the scalping nature of the strategy, there is no room for holding a losing position against a new, valid signal in the opposite direction. The framework will employ a **"Close-and-Reverse"** logic. If a `long_condition` is met while in a short position, the system will generate two orders:
+    1.  An order to close the existing short position at the market.
+    2.  An order to open a new long position at the market.
 
 ### 2. Multi-Tiered Exit Logic
 
-The original script contains no exit logic, which is the most critical component for profitability and risk control. A professional framework must incorporate a layered approach.
+A scalping strategy's profitability is defined more by its exit discipline than its entries. The following tiered exit system provides a robust defense and profit-capture mechanism.
 
-*   **Initial Stop Loss (Volatility-Based):** An arbitrary percentage or point-based stop is inadequate for a 1-minute chart where volatility can change drastically. The stop loss will be calculated dynamically using the Average True Range (ATR).
-    *   **Long Stop Loss:** `entry_price_low - (ATR * 1.5)`. The stop is placed 1.5x the current 14-period ATR value below the low of the signal candle. This places it outside the immediate noise zone.
-    *   **Short Stop Loss:** `entry_price_high + (ATR * 1.5)`. The stop is placed 1.5x ATR above the high of the signal candle.
+*   **Initial Stop Loss (Volatility-Based):** The stop loss will be calculated dynamically based on the Average True Range (ATR) to adapt to current market volatility.
+    *   **For Longs:** `Stop Loss Price = low[1] - (ATR * Multiplier)`. The stop is placed below the low of the signal bar, providing a structural buffer. A typical `Multiplier` would be between 1.0 and 1.5.
+    *   **For Shorts:** `Stop Loss Price = high[1] + (ATR * Multiplier)`. The stop is placed above the high of the signal bar.
 
-*   **Take Profit / Trailing Mechanism:** A static take-profit can cut winning trades short. A dynamic trailing stop is superior for scalping.
-    1.  **Initial Profit Target (TP1):** Set an initial take-profit at a 1.5:1 Risk/Reward Ratio. For example, if the distance from entry to the initial stop loss is 10 points, TP1 is set at `entry_price + 15` points.
-    2.  **Trailing Stop Activation:** Once price hits TP1, the initial stop loss is cancelled and a dynamic trailing stop is activated. A robust method is a **Chandelier Exit**:
-        *   **Trailing Long:** The stop is trailed at `highest(high, X) - (ATR * Y)`, where `X` is the number of bars since the trade entry and `Y` is an ATR multiplier (e.g., 2.0). The stop only moves up, never down.
-        *   **Trailing Short:** The stop is trailed at `lowest(low, X) + (ATR * Y)`.
+*   **Take Profit/Trailing (Multi-Stage):** A static take profit can leave money on the table. A multi-stage approach is superior.
+    1.  **Target 1 (TP1):** Set at a 1:1 Risk/Reward ratio. `Take Profit Price = Entry Price + (Entry Price - Stop Loss Price)`.
+    2.  **Breakeven Trigger:** Upon TP1 being hit (if scaling out) or simply being crossed, the stop loss for the remainder of the position is moved to the entry price. This immediately removes risk from the trade.
+    3.  **Trailing Stop Activation:** After the breakeven move, a trailing stop is activated. A "Chandelier Exit" is effective here: trail the stop `X * ATR` below the highest high achieved since the entry (for longs) or above the lowest low (for shorts). This allows the winner to run while still protecting profits.
 
-*   **Time-Based Exits:** Scalping positions should not be held indefinitely.
-    *   **Stagnation Exit:** If a position has been open for more than 20 bars and has not hit either the stop loss or the initial take profit, it is considered a "dead trade." The position will be closed at the market to free up capital and reduce exposure to random events.
-    *   **End of Day (EOD) Exit:** All open positions will be squared off 15 minutes before the session close to avoid overnight risk, funding charges, and gap risk on the next day's open.
+*   **Time-Based Exits:** Time is a critical risk factor in scalping.
+    *   **Stagnation Exit:** If a position has been open for $N$ bars (e.g., 15 bars on a 1M chart) and has not reached the breakeven trigger, it is closed automatically. This prevents capital from being tied up in trades that lack momentum.
+    *   **End of Session Exit:** All open positions will be squared off automatically at a specified time (e.g., 15 minutes before the session close) to eliminate overnight and weekend risk.
 
 ### 3. Capital Allocation & Risk Management
 
-Position sizing is not an afterthought; it is a core component of the strategy's architecture.
+Position sizing is the engine of risk control. We will move from fixed-lot thinking to a dynamic, risk-based model.
 
-*   **Risk-Based Sizing:** The strategy will risk a fixed percentage of account equity on every trade, standardizing risk regardless of the trade's specific stop-loss distance.
+*   **Risk-Based Sizing:** The core principle is to risk a fixed percentage of account equity on every single trade, regardless of the trade's parameters.
     *   **Formula:**
-        `Risk_Amount = Account_Equity * Risk_Per_Trade_Percent`
-        `Trade_Risk_Per_Share = abs(Entry_Price - Stop_Loss_Price)`
-        `Position_Size = Risk_Amount / Trade_Risk_Per_Share`
-    *   **Example:** With a $10,000 account and a 1% risk setting, the risk per trade is $100. If the distance from entry to the ATR-based stop loss is $0.50, the position size would be `$100 / $0.50 = 200` shares.
+        `Position Size = (Account Equity * Risk Percentage) / |Entry Price - Stop Loss Price|`
+    *   **Implementation:**
+        1.  Define a `risk_per_trade` input (e.g., 0.01 for 1% of equity).
+        2.  Calculate the dollar amount to risk: `risk_amount = strategy.equity * risk_per_trade`.
+        3.  Calculate the risk per share/contract: `risk_per_unit = math.abs(entry_price - stop_loss_price)`.
+        4.  Calculate the final position size: `position_size = risk_amount / risk_per_unit`.
+        This ensures that a trade with a wide stop has a smaller position size than a trade with a tight stop, equalizing the dollar risk for both.
 
 *   **Pyramiding & Scaling:**
-    *   **Pyramiding (Scaling In):** **Not recommended** for this 1-minute scalping strategy. The holding period is too short, and the logic is designed for a single, precise entry point. Adding to the position (pyramiding) introduces significant complexity, increases the average entry price, and magnifies risk in a fast-moving environment.
-    *   **Scaling Out:** This is a viable alternative to the single TP/Trailing Stop model. The position could be exited in stages:
-        *   Exit 50% of the position at TP1 (e.g., 1.5R).
-        *   Move the stop loss for the remaining 50% to breakeven.
-        *   Trail the stop for the remainder using the Chandelier Exit described above to capture a larger move.
+    *   **Pyramiding (Adding to Winners):** **Strongly discouraged** for this 1M scalping strategy. The signals are designed to capture short, sharp bursts of momentum. Adding to a position increases exposure just as the move may be exhausting itself, dramatically increasing the risk of a sharp reversal.
+    *   **Scaling Out:** **Recommended.** This aligns with the multi-stage take-profit logic. For example, one could close 50% of the position at TP1 and let the remaining 50% run with the trailing stop. This locks in profits while maintaining exposure to a larger potential move.
 
 ### 4. Implementation Snippet (Pine Logic)
 
-This snippet demonstrates the conversion from an `indicator` to a `strategy` incorporating the professional-grade execution logic.
+This snippet demonstrates the conversion of the indicator into a professional strategy, incorporating the architectural components discussed above.
 
 ```pine
 //@version=5
-// 1. STRATEGY DECLARATION - From Indicator to a realistic execution engine
-strategy("1M Pro Scalping Framework", 
+// 1. STRATEGY DECLARATION WITH REALISTIC FRICTION
+strategy("1M Smart Scalping - Execution Framework", 
      overlay=true, 
-     pyramiding=0, // No pyramiding allowed
-     initial_capital=10000, 
-     default_qty_type=strategy.cash, // We will calculate size manually
-     commission_type=strategy.commission.cash_per_order,
-     commission_value=1.00, // Realistic per-order commission
-     slippage=2) // 2 ticks of slippage for 1M timeframe
+     process_orders_on_close=true, // Execute on the open of the next bar
+     slippage=2, // 2 ticks of slippage for market orders
+     commission_type=strategy.commission.percent, 
+     commission_value=0.04) // Realistic commission for retail brokers
 
 // =======================
-// ⚙️ INPUTS & CORE LOGIC (Unchanged from original script)
+// ⚙️ INPUTS FOR OPTIMIZATION
 // =======================
-pivot_len = input.int(5, "Pivot Length")
+// Risk Management
+risk_per_trade = input.float(1.0, "Risk per Trade (%)", minval=0.1, maxval=5.0) / 100
+// Exit Logic
 atr_period = input.int(14, "ATR Period")
-atr_sl_multiplier = input.float(1.5, "ATR Stop Loss Multiplier")
-atr_sr_multiplier = input.float(0.5, "ATR S/R Filter Multiplier")
-stagnation_bars = input.int(20, "Max Bars in Trade")
-risk_percent = input.float(1.0, "Risk % Per Trade")
+sl_atr_multiplier = input.float(1.5, "Stop Loss ATR Multiplier", minval=0.5)
+tp_rr_ratio = input.float(1.5, "Take Profit R:R Ratio", minval=0.5)
+stagnation_bars = input.int(15, "Max Bars in Trade")
 
-// Original Logic
+// Original Logic Inputs
+pivot_len = 5
+
+// =======================
+// 🔁 CORE LOGIC (FROM ORIGINAL SCRIPT)
+// =======================
+// No-Repaint ZigZag
 ph = ta.pivothigh(high, pivot_len, pivot_len)
 pl = ta.pivotlow(low, pivot_len, pivot_len)
 var float last_high = na, var float prev_high = na, var float last_low = na, var float prev_low = na
 if not na(ph) { prev_high := last_high; last_high := ph }
 if not na(pl) { prev_low := last_low; last_low := pl }
+
+// Trend
 trend_up = not na(prev_low) and last_low > prev_low
 trend_down = not na(prev_high) and last_high < prev_high
+
+// S&R
 support = ta.lowest(low, 10)[1]
 resistance = ta.highest(high, 10)[1]
 atr = ta.atr(atr_period)
-sr_distance = atr * atr_sr_multiplier
+sr_distance = atr * 0.5
 near_support = math.abs(close - support) < sr_distance
 near_resistance = math.abs(close - resistance) < sr_distance
+
+// Candle & Breakout
 bull = close > open and (close - open) > (high - low) * 0.5
 bear = open > close and (open - close) > (high - low) * 0.5
 breakout_up = high > ta.highest(high, 5)[1]
 breakout_down = low < ta.lowest(low, 5)[1]
 
-// Final Signals (barstate.isconfirmed is implicit in strategy execution on bar close)
-up_signal = timeframe.period == "1" and trend_up and bull[2] and bear[1] and bull and breakout_up and not near_resistance
-down_signal = timeframe.period == "1" and trend_down and bear[2] and bull[1] and bear and breakout_down and not near_support
+// Final Signals
+long_condition = timeframe.period == "1" and trend_up and bull[2] and bear[1] and bull and breakout_up and not near_resistance
+short_condition = timeframe.period == "1" and trend_down and bear[2] and bull[1] and bear and breakout_down and not near_support
 
 // =======================
-// 2. RISK & EXIT CALCULATION
+// 💰 CAPITAL ALLOCATION & RISK MANAGEMENT
 // =======================
-// Function to calculate position size based on risk
-f_getPosSize(risk_capital, price_risk) =>
-    price_risk > 0 ? math.floor(risk_capital / price_risk) : 0
+// Calculate Stop Loss Price *before* entry to determine size
+long_stop_price = low[1] - (atr * sl_atr_multiplier)
+short_stop_price = high[1] + (atr * sl_atr_multiplier)
 
-// Calculate Stop Loss and Position Size for potential trades
-long_stop_price = low - (atr * atr_sl_multiplier)
-short_stop_price = high + (atr * atr_sl_multiplier)
-long_tp_price = close + (close - long_stop_price) * 1.5 // 1.5R Take Profit
-short_tp_price = close - (short_stop_price - close) * 1.5 // 1.5R Take Profit
-
-risk_capital_per_trade = (strategy.equity * risk_percent) / 100
-long_pos_size = f_getPosSize(risk_capital_per_trade, close - long_stop_price)
-short_pos_size = f_getPosSize(risk_capital_per_trade, short_stop_price - close)
-
-// Time-based Exit Conditions
-is_eod = hour(time_close) == 15 and minute(time_close) >= 45 // Example for US Equities (close at 16:00)
-is_stagnant = barssince(strategy.opentrades > 0) > stagnation_bars
+// Risk-based position sizing
+risk_per_unit_long = close - long_stop_price
+risk_per_unit_short = short_stop_price - close
+position_size_long = (strategy.equity * risk_per_trade) / risk_per_unit_long
+position_size_short = (strategy.equity * risk_per_trade) / risk_per_unit_short
 
 // =======================
-// 3. EXECUTION ENGINE
+// 📈 EXECUTION ENGINE
 // =======================
 // --- ENTRY LOGIC ---
-if (up_signal)
-    // Handle reversal: close short before entering long
-    if (strategy.position_size < 0)
-        strategy.close("Short", comment="Short Reversal")
-    // Enter new long position
-    strategy.entry("Long", strategy.long, qty=long_pos_size)
-    // Place SL/TP bracket order for the new long position
+if (long_condition)
+    // Close any existing short and go long
+    strategy.close("Short", comment="Short Reverse")
+    strategy.entry("Long", strategy.long, qty=position_size_long)
+
+if (short_condition)
+    // Close any existing long and go short
+    strategy.close("Long", comment="Long Reverse")
+    strategy.entry("Short", strategy.short, qty=position_size_short)
+
+// --- EXIT LOGIC ---
+// Set SL/TP for the long position
+if strategy.position_size > 0
+    long_tp_price = strategy.position_avg_price + (risk_per_unit_long * tp_rr_ratio)
     strategy.exit("Long Exit", from_entry="Long", stop=long_stop_price, limit=long_tp_price)
 
-if (down_signal)
-    // Handle reversal: close long before entering short
-    if (strategy.position_size > 0)
-        strategy.close("Long", comment="Long Reversal")
-    // Enter new short position
-    strategy.entry("Short", strategy.short, qty=short_pos_size)
-    // Place SL/TP bracket order for the new short position
+// Set SL/TP for the short position
+if strategy.position_size < 0
+    short_tp_price = strategy.position_avg_price - (risk_per_unit_short * tp_rr_ratio)
     strategy.exit("Short Exit", from_entry="Short", stop=short_stop_price, limit=short_tp_price)
 
-// --- TIME-BASED EXIT LOGIC ---
-if (is_eod or is_stagnant)
-    strategy.close_all(comment = is_eod ? "EOD Close" : "Stagnation Exit")
+// Time-based Stagnation Exit
+if barssince(strategy.opentrades > 0) > stagnation_bars
+    strategy.close_all(comment="Stagnation Exit")
 
-// =======================
-// 4. VISUALIZATION (Optional)
-// =======================
-bgcolor(strategy.position_size > 0 ? color.new(color.blue, 90) : strategy.position_size < 0 ? color.new(color.purple, 90) : na)
-plot(strategy.position_size > 0 ? long_stop_price : na, "SL", color.red, style=plot.style_linebr)
-plot(strategy.position_size > 0 ? long_tp_price : na, "TP", color.green, style=plot.style_linebr)
-plot(strategy.position_size < 0 ? short_stop_price : na, "SL", color.red, style=plot.style_linebr)
-plot(strategy.position_size < 0 ? short_tp_price : na, "TP", color.green, style=plot.style_linebr)
+// End of Session Exit (Example: Close all trades at 20:45 UTC)
+is_eod = hour(time_close) == 20 and minute(time_close) >= 45
+if is_eod
+    strategy.close_all(comment="End of Session")
+
+// Plotting for visual confirmation
+plot(strategy.position_size > 0 ? long_stop_price : na, "Long SL", color.red, style=plot.style_linebr)
+plot(strategy.position_size < 0 ? short_stop_price : na, "Short SL", color.red, style=plot.style_linebr)
 ```
     

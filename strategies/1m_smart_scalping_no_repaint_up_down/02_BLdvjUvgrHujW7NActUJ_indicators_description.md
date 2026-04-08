@@ -3,84 +3,96 @@
 
 ### 1. Component Deconstruction
 
-This section dissects each technical component of the script, detailing its configuration and any custom mathematical logic.
+#### **Non-Repainting Pivots (Custom ZigZag)**
+*   **Core Functions:** `ta.pivothigh(source, leftbars, rightbars)` and `ta.pivotlow(source, leftbars, rightbars)`.
+*   **Specific Configuration:**
+    *   `source`: `high` for pivots high, `low` for pivots low.
+    *   `leftbars`: `pivot_len` = 5.
+    *   `rightbars`: `pivot_len` = 5.
+    *   A pivot high is confirmed only when a bar's `high` is greater than the `high` of the 5 preceding and 5 succeeding bars. This introduces a 5-bar lag, as the script must wait for 5 bars to close to the right of a potential pivot before confirming it.
+*   **Functional Modification (Non-Repainting Logic):**
+    *   The script uses `var` declared variables (`last_high`, `prev_high`, `last_low`, `prev_low`) to create a persistent state machine for trend detection.
+    *   When `ta.pivothigh` returns a valid price (not `na`), it signifies a confirmed pivot from 5 bars ago. The script then updates its state: the existing `last_high` is shifted to `prev_high`, and the newly confirmed pivot value becomes the new `last_high`.
+    *   **Intended Effect:** This architecture transforms the repainting nature of `ta.pivothigh` into a non-repainting, lagging trend structure. The trend is defined by the relationship between the two most recently *confirmed* pivots (`last_low > prev_low` for an uptrend), providing a robust, albeit delayed, assessment of market structure.
 
-*   **Non-Repainting Pivots (Zigzag Logic)**
-    *   **Specific Configuration:** The core engine uses `ta.pivothigh(high, 5, 5)` and `ta.pivotlow(low, 5, 5)`.
-        *   **Price Source:** `high` for pivot highs, `low` for pivot lows.
-        *   **Lookback Periods:** The left and right lookback periods are both set to `5`. A pivot high is only confirmed after 5 subsequent bars have failed to make a new high. Symmetrically for a pivot low.
-    *   **Functional Modification:** The script implements a non-repainting mechanism by storing confirmed pivot values in `var` variables (`last_high`, `prev_high`, `last_low`, `prev_low`). When the native `ta.pivothigh` or `ta.pivotlow` function returns a non-`na` value (indicating a pivot has just been confirmed `pivot_len` bars in the past), the script updates its historical state. This converts the repainting nature of the built-in functions into a stable, non-repainting series of the two most recent confirmed pivot points, which is essential for reliable backtesting and live signal generation.
+#### **Support & Resistance Levels**
+*   **Core Functions:** `ta.lowest(source, length)` and `ta.highest(source, length)`.
+*   **Specific Configuration:**
+    *   `source`: `low` for support, `high` for resistance.
+    *   `length`: 10 bars.
+    *   `offset`: `[1]`. The calculation is performed on the *previous* 10 bars, excluding the current, developing bar.
+*   **Functional Modification:** These are not used as direct entry or exit triggers. They serve as reference points for the ATR-based proximity filter. They define the immediate "danger zones" where a trade might face immediate opposition.
 
-*   **Trend Definition**
-    *   **Specific Configuration:** This is a derived boolean (`trend_up`, `trend_down`) based on the non-repainting pivot values.
-    *   **Functional Modification:** Trend is defined purely by the sequence of confirmed pivots.
-        *   `trend_up` is `true` if the most recent confirmed pivot low (`last_low`) is greater than the previously confirmed pivot low (`prev_low`). This constitutes a higher low.
-        *   `trend_down` is `true` if the most recent confirmed pivot high (`last_high`) is lower than the previously confirmed pivot high (`prev_high`). This constitutes a lower high.
-        This is a classical Dow Theory definition of trend applied on a micro-scale.
+#### **Average True Range (ATR) Proximity Filter**
+*   **Core Function:** `ta.atr(length)`.
+*   **Specific Configuration:**
+    *   `length`: 14 periods. This is a standard lookback for volatility measurement.
+*   **Functional Modification:** The raw ATR value is multiplied by a constant to create a dynamic buffer zone.
+    *   **Mathematical Logic:** `sr_distance = atr * 0.5`. This calculates a distance equivalent to 50% of the current 14-period ATR.
+    *   **Intended Effect:** This creates a volatility-adjusted "no-trade zone" around the 10-bar support and resistance levels. In volatile markets, the ATR is larger, thus the buffer zone expands, requiring price to be further away from S/R to trigger a signal. In quiet markets, the zone contracts. This dynamically adjusts the risk profile by preventing entries with insufficient room for price to move before hitting a potential reversal point.
 
-*   **Support & Resistance Levels**
-    *   **Specific Configuration:** `support = ta.lowest(low, 10)[1]` and `resistance = ta.highest(high, 10)[1]`.
-        *   **Lookback Period:** 10 bars.
-        *   **Price Source:** `low` for support, `high` for resistance.
-        *   **Offset:** `[1]`.
-    *   **Functional Modification:** The `[1]` offset is a critical design choice. It ensures that the S/R levels are calculated based on the 10 bars *preceding* the current, signal-generating bar. This prevents look-ahead bias by defining the S/R context *before* the entry signal is evaluated.
+#### **Strong Candle Filter**
+*   **Core Function:** Custom boolean logic.
+*   **Specific Configuration:**
+    *   **Bullish:** `(close - open) > (high - low) * 0.5`. The candle's body must be larger than 50% of its total range (from high to low).
+    *   **Bearish:** `(open - close) > (high - low) * 0.5`. Same logic for a bearish candle.
+*   **Functional Modification:** This is a custom-built filter to quantify "conviction." It isolates candles that demonstrate strong directional pressure and filters out indecisive price action (e.g., Dojis, spinning tops) where the body is small relative to the wicks. It improves the signal-to-noise ratio by ensuring the pattern components are based on decisive moves, not random fluctuations.
 
-*   **ATR Proximity Filter**
-    *   **Specific Configuration:** `atr = ta.atr(14)`. This is a standard 14-period Average True Range.
-    *   **Functional Modification:** The ATR is not used for stop-loss calculation but as a dynamic buffer to define "nearness" to S/R.
-        *   **Mathematical Logic:** `sr_distance = atr * 0.5`. A zone is created with a width of 50% of the current 14-period ATR value.
-        *   **Application:** The condition `math.abs(close - support) < sr_distance` checks if the closing price is within this dynamic buffer zone of the support level (and symmetrically for resistance). This makes the filter adaptive; the "no-trade zone" expands in volatile markets and contracts in quiet ones, improving the signal-to-noise ratio.
+#### **Breakout Filter**
+*   **Core Functions:** `ta.highest(source, length)` and `ta.lowest(source, length)`.
+*   **Specific Configuration:**
+    *   `source`: `high` for upside, `low` for downside.
+    *   `length`: 5 bars.
+    *   `offset`: `[1]`. The comparison is against the highest high or lowest low of the *previous* 5 bars.
+*   **Functional Modification:** This acts as an immediate momentum confirmation. The condition `high > ta.highest(high, 5)[1]` ensures that the entry candle is not just a strong candle, but one that is actively breaking a short-term price ceiling, confirming buyer aggression at the point of signal generation.
 
-*   **Strong Candle Filter**
-    *   **Specific Configuration:** This is a custom boolean logic, not a standard indicator.
-    *   **Functional Modification:** It quantifies a "strong" or "decisive" candle.
-        *   **Mathematical Logic:** A bullish candle is "strong" if its body (`close - open`) is greater than 50% of its total range (`high - low`). A bearish candle is "strong" if its body (`open - close`) is greater than 50% of its total range.
-        *   **Intended Effect:** This filters out candles of indecision, such as dojis and spinning tops, ensuring that the bars used in the pattern recognition represent significant momentum and not market noise.
-
-*   **Breakout Confirmation**
-    *   **Specific Configuration:** `breakout_up = high > ta.highest(high, 5)[1]` and `breakout_down = low < ta.lowest(low, 5)[1]`.
-    *   **Functional Modification:** This functions as a short-term Donchian Channel breakout. It confirms renewed momentum by requiring the current bar's high (for longs) or low (for shorts) to exceed the price extreme of the previous 5 bars. The `[1]` offset ensures the breakout is relative to the *prior* range.
+---
 
 ### 2. Logic Layering & Confluence
 
-The script's engine achieves signal precision by stacking these components in a strict, hierarchical order. A signal is only generated if all layers of the filter return a permissive state.
+The script's engine is a hierarchical filter cascade where each layer must be passed before the next is evaluated. This creates a high-confluence setup designed to minimize false signals.
 
-*   **Interaction Dynamics:** The strategy is built on **Confluence** and **Hierarchical Filtering**. It does not use divergence. Every component must agree for a signal to be valid.
+*   **Interaction Dynamics:** The primary dynamic is **Confluence**. The engine does not look for divergences; it demands that trend, pattern, and momentum align in the same direction.
 
 *   **Hierarchical Filtering:**
-    1.  **Gatekeeper (Regime Filter):** The non-repainting pivot structure (`trend_up` / `trend_down`) acts as the highest-level filter. It first establishes the market's directional bias. If the trend condition is not met (e.g., `trend_up` is not `true`), all subsequent logic for a long signal is ignored.
-    2.  **Pattern Filter:** The script then scans for a specific three-bar sequence using the **Strong Candle Filter**. For a long entry, it requires: Strong Bull Candle `[2]` -> Strong Bear Candle `[1]` -> Strong Bull Candle `[0]`. This identifies the "pullback-resumption" narrative. This is a form of pattern recognition based on **Threshold Crosses** (each candle must cross the 50% body-to-range threshold).
-    3.  **Momentum Trigger:** The `breakout_up` / `breakout_down` condition serves as the final confirmation of momentum. The resumption candle must not only be strong but also powerful enough to break the immediate 5-bar price ceiling/floor.
-    4.  **Risk Filter (Exclusionary Logic):** The `not near_resistance` / `not near_support` condition is the final check. It acts as a veto. Even if the trend, pattern, and momentum are perfectly aligned, the trade is blocked if the entry price is too close to a recent S/R level, preserving a viable risk-reward profile.
+    1.  **State Filter (Macro-Trend):** The non-repainting pivot structure (`trend_up` / `trend_down`) is the highest-level gatekeeper. It defines the permissible trade direction. If the market structure is not showing confirmed higher lows (`trend_up = false`), the entire long-side logic is bypassed, regardless of any bullish patterns.
+    2.  **Pattern Filter (Micro-Sequence):** Once the macro-trend is confirmed, the engine looks for the specific three-bar sequence:
+        *   **Long:** `bull[2]` (initial push) -> `bear[1]` (pullback) -> `bull` (resumption).
+        *   This is a pattern recognition module that identifies the "shakeout and re-engagement" narrative.
+    3.  **Confirmation Filter (Immediate Momentum):** The `breakout_up` / `breakout_down` condition acts as the subsequent check. The three-bar pattern may be present, but the script waits for the final candle to break the immediate 5-bar range. This confirms that the resumption move has enough force to establish a new short-term high/low.
+    4.  **Risk Management Filter (Veto Power):** The `not near_resistance` / `not near_support` condition is the final gatekeeper. It has veto power over the entire signal. If all other conditions are met, but the entry price is within the ATR-defined buffer of a recent S/R level, the signal is suppressed. This layer prioritizes trade location and initial risk-to-reward potential over the signal pattern itself.
+
+---
 
 ### 3. The Execution Engine
 
-This section defines the precise boolean logic and mathematical constants that trigger an entry signal.
+The trigger is a boolean `true` value returned only when a precise set of conditions are met on a confirmed, closed bar.
 
-*   **Boolean Logic: `up_signal`**
-    A `true` signal is returned only if the following conditions are met simultaneously on a confirmed bar close (`barstate.isconfirmed`):
-    1.  `is_1m`: The chart timeframe is exactly 1 minute.
-    2.  `trend_up`: The structural trend is up (last confirmed pivot low > previous pivot low).
-    3.  `bull[2]`: The candle two bars ago was a strong bullish candle.
-    4.  `bear[1]`: The candle one bar ago was a strong bearish candle (the pullback).
-    5.  `bull`: The current, closing candle is a strong bullish candle (the resumption).
-    6.  `breakout_up`: The high of the current candle broke above the highest high of the previous 5 candles.
-    7.  `not near_resistance`: The closing price is not within the exclusionary zone (0.5 * ATR) of the 10-bar resistance level.
+#### **Long Signal (`up_signal`)**
+*   **Boolean Logic:** A `true` signal is generated if and only if all the following conditions are met simultaneously:
+    1.  `is_1m`: The chart is on the 1-minute timeframe.
+    2.  `barstate.isconfirmed`: The signal is evaluated only on the close of the bar, preventing intra-bar repainting.
+    3.  `trend_up`: The two most recently confirmed pivot lows are forming a higher low (`last_low > prev_low`).
+    4.  `bull[2]`: The bar two periods ago was a "strong" bullish candle (body > 50% of range).
+    5.  `bear[1]`: The previous bar was a "strong" bearish candle (the pullback).
+    6.  `bull`: The current, closing bar is a "strong" bullish candle (the resumption).
+    7.  `breakout_up`: The high of the current bar is greater than the highest high of the previous 5 bars.
+    8.  `not near_resistance`: The closing price is *not* within 0.5 * ATR(14) of the 10-bar high.
 
-*   **Boolean Logic: `down_signal`**
-    The logic is perfectly symmetrical for a short signal:
-    1.  `is_1m`: The chart timeframe is exactly 1 minute.
-    2.  `trend_down`: The structural trend is down (last confirmed pivot high < previous pivot high).
-    3.  `bear[2]`: The candle two bars ago was a strong bearish candle.
-    4.  `bull[1]`: The candle one bar ago was a strong bullish candle (the counter-trend bounce).
-    5.  `bear`: The current, closing candle is a strong bearish candle (the resumption).
-    6.  `breakout_down`: The low of the current candle broke below the lowest low of the previous 5 candles.
-    7.  `not near_support`: The closing price is not within the exclusionary zone (0.5 * ATR) of the 10-bar support level.
+#### **Short Signal (`down_signal`)**
+*   **Boolean Logic:** The logic is a mirror image of the long signal:
+    1.  `is_1m`: True.
+    2.  `barstate.isconfirmed`: True.
+    3.  `trend_down`: The two most recently confirmed pivot highs are forming a lower high (`last_high < prev_high`).
+    4.  `bear[2]`: The bar two periods ago was a "strong" bearish candle.
+    5.  `bull[1]`: The previous bar was a "strong" bullish candle (the counter-trend bounce).
+    6.  `bear`: The current, closing bar is a "strong" bearish candle.
+    7.  `breakout_down`: The low of the current bar is less than the lowest low of the previous 5 bars.
+    8.  `not near_support`: The closing price is *not* within 0.5 * ATR(14) of the 10-bar low.
 
-*   **Mathematical Constants & Their Influence**
-    *   **`pivot_len = 5`:** Defines the reactivity of the trend filter. A value of 5 on a 1M chart creates a sensitive micro-trend definition, ideal for scalping.
-    *   **`S/R lookback = 10`:** Establishes a very short-term S/R horizon (10 minutes), focusing only on immediate price obstacles.
-    *   **`ATR multiplier = 0.5`:** This is a key risk management constant. It dictates the "breathing room" required for a trade. A value of `0.5` provides a moderate filter, blocking trades that are entering directly into a potential reversal zone. Increasing this value would make the filter stricter, reducing signal frequency but potentially increasing the quality of the remaining signals.
-    *   **`Strong Candle threshold = 0.5`:** The 50% body-to-range ratio is a strict definition of momentum. It ensures the pattern is composed of decisive price action, filtering out noise and indecision.
-    *   **`Breakout lookback = 5`:** A 5-bar breakout is a confirmation of immediate momentum. It ensures the entry occurs as price is accelerating, not stalling.
+#### **Mathematical Constants**
+*   **`pivot_len = 5`:** Defines the sensitivity of the trend filter. A value of 5 requires a significant swing to be confirmed, filtering out minor chop and focusing on more established structural shifts. It imposes a 5-bar lag on trend confirmation.
+*   **`10` (S/R Lookback):** Defines a very short-term horizon for support and resistance. This is appropriate for a 1-minute scalping strategy, as it focuses only on the most immediate price obstacles.
+*   **`0.5` (ATR Multiplier):** This is a critical risk management constant. A value of `0.5` creates a moderately sized "no-trade zone."
+    *   **Influence on R:R:** By forcing entries to occur away from immediate resistance, it ensures there is, at minimum, a predefined amount of "clear air" for the trade to move into profit before hitting a likely point of friction. This mechanically attempts to improve the initial risk-to-reward profile of each setup. A higher multiplier would increase this effect at the cost of fewer signals.
     
