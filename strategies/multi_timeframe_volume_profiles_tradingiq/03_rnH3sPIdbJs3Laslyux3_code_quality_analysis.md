@@ -3,53 +3,50 @@
 
 ### 1. Architectural Efficiency & Optimization
 
-The script's architecture is a double-edged sword. It correctly uses `if barstate.islast` to confine the vast majority of its computational and drawing workload to the last bar, which is an essential optimization for this type of analysis. Without this, the script would be unusable.
+The script's architecture is ambitious, aiming to construct multiple, simultaneous volume profiles from lower-timeframe (LTF) data. However, this ambition comes at a steep computational cost.
 
-However, several significant performance issues exist:
-
-*   **Multiple `request.security_lower_tf` Calls:** The script makes up to five separate calls to `request.security_lower_tf`, one for each configurable higher timeframe (HTF). This function is notoriously resource-intensive, as it must fetch and process data from a different context. Executing it multiple times creates a severe performance bottleneck, which will lead to script lag and potential "Calculation-Heavy" warnings, especially when using low-timeframe data (e.g., '1' minute) for the volume source.
-*   **Redundant Data Processing Loop:** Inside the `barstate.islast` block, if `showVals` is enabled, the script iterates through the entire `htfProfile.LTFvals` array a second time to populate a `miniProfile`. This is highly inefficient. The data required for the value labels could and should be calculated during the first pass when the main `htfProfile` is being constructed, effectively halving the processing time for this section.
-*   **Efficient Sub-components:** On a positive note, the script effectively uses `array.binary_search_leftmost` to distribute volume into price bins. This is logarithmically faster than a linear search and is the correct, high-performance approach for this task. The memory management is also sound, with arrays being cleared at the start of each new HTF period, preventing unbounded memory growth.
+*   **Primary Bottleneck (`request.security_lower_tf`):** The script makes up to five separate calls to `request.security_lower_tf`. This function is notoriously resource-intensive, as it must fetch and process a large dataset from a secondary context. Calling it multiple times compounds the performance hit, making the script inherently "Calculation-Heavy."
+*   **`barstate.islast` Optimization:** The developer correctly wraps the entire calculation and drawing logic within an `if barstate.islast` block. This is a critical and well-executed optimization. It prevents the heavy lifting of profile generation from running on every historical bar, confining it only to the most recent, real-time bar. Without this, the script would be completely unusable.
+*   **Data Accumulation Strategy:** The script accumulates all LTF data points for an entire higher-timeframe (HTF) period into the `htfProfile.LTFvals` array. While this is a valid approach, it can lead to extreme memory consumption, especially when a long HTF (e.g., '1W') is combined with a very short LTF (e.g., '1'). This large in-memory array is then iterated over multiple times, which is inefficient.
+*   **Redundant Calculation Loop:** A significant inefficiency exists when `showVals` is enabled. The script calculates a `miniProfile` by re-iterating through the entire raw `htfProfile.LTFvals` array. This is a major violation of the DRY (Don't Repeat Yourself) principle. This data could have been derived by re-binning the already-calculated `htfProfile` data, avoiding a costly and redundant loop over thousands of data points.
 
 ### 2. Modern Standards & Syntax Audit
 
-The script is an excellent demonstration of contemporary Pine Script v5 features and syntax.
+The script demonstrates a strong command of modern Pine Script v5 features, though it contains a critical versioning error.
 
-*   **Legacy Check:** The script is written for a forward-looking version (`//@version=6`, likely a typo for v5 or an internal beta) and contains no legacy syntax. It fully embraces the modern v5 paradigm.
+*   **Legacy Check:** The script is written with modern syntax and avoids legacy functions. However, it incorrectly specifies `//@version=6`. As of this audit, Pine Script v6 does not exist; the latest is v5. This is a fatal error that prevents the script from compiling and indicates a lack of final testing. Assuming this is a typo for `v5`, the code is otherwise up-to-date.
 *   **Advanced Features:**
-    *   **User-Defined Types (UDTs):** The use of `type profile`, `type dataStoreLTF`, and `type htfDraw` is exemplary. This object-oriented approach encapsulates related data, making the code significantly cleaner, more readable, and less error-prone than managing dozens of parallel arrays or variables.
-    *   **Methods:** The script correctly defines and uses methods (`method setVals`, `method addPoints`) to operate on its UDTs and arrays. This further enhances encapsulation and brings a sophisticated, class-like structure to the code.
-    *   **Arrays:** The script is built entirely around the modern `array` object, using its methods (`.new`, `.set`, `.get`, `.push`, `.clear`, `.concat`, etc.) correctly and effectively.
-    *   **`enum`:** The use of `enum` for the `modelType` input provides type safety and improves readability over using simple string inputs.
-
-The script author demonstrates a clear and deep understanding of Pine Script's most advanced capabilities.
+    *   **User-Defined Types (UDTs) & Methods:** The use of `type profile`, `type dataStoreLTF`, and methods like `method setVals` is outstanding. This object-oriented approach is a hallmark of high-level Pine Script development. It encapsulates complex state and logic, dramatically improving code organization and readability.
+    *   **Arrays:** The script is built around the effective use of arrays for managing price levels, volumes, and drawing object IDs. This is the correct, modern approach.
+    *   **Enums:** The `enum modelType` for input selection is a best practice, providing type safety and clarity over string-based options.
+    *   **Drawing Objects:** The use of `polyline` to construct the profile shapes from an array of `chart.point`s is a clever and efficient technique for creating custom-filled shapes.
 
 ### 3. Logic Integrity & Reliability
 
-The script's logic is generally robust and demonstrates good defensive programming practices.
+The script's logic is generally sound for its intended purpose, but it suffers from a lack of defensive programming, creating reliability risks.
 
-*   **Repainting & Future Leaks:** The script is free from repainting. By using `request.security_lower_tf` and performing all calculations within `if barstate.islast`, it ensures that the profiles are built from historical lower-timeframe data and are only drawn for the current, developing HTF periods. This behavior is real-time updating, not repainting. The logic does not access future data.
+*   **Repainting & Future Leaks:** The script does **not repaint**. By using `request.security_lower_tf` and confining all drawing to `barstate.islast`, it correctly processes historical LTF data for the current bar only. The visual profile does not change on historical bars, which is an intentional design choice for a real-time tool. There are no future leaks.
 *   **Calculation Stability:**
-    *   **Division-by-Zero:** The script cleverly avoids a division-by-zero error when distributing volume across price levels. The formula `div = data.V / (math.abs(upLev - dnLev) + 1)` adds `1` to the denominator, safely handling cases where a trade's high and low fall within the same price bin (`upLev == dnLev`).
-    *   **Potential Edge Case:** A minor vulnerability exists in the normalization calculation: `(value - min) / (max - min)`. If all volume levels in the profile happen to be identical, `max` will equal `min`, resulting in a division-by-zero error. While this is a rare edge case, a production-grade script would include a check (`if max > min`) to prevent this runtime error.
+    *   **Division-by-Zero:** The code correctly avoids a division-by-zero error when distributing volume across price bins by adding `+ 1` to the denominator (`div = data.V / (math.abs(upLev - dnLev) + 1)`). This is good.
+    *   **`na` Handling Failure:** A critical flaw exists in the normalization and POC-finding logic. The script calculates `(max - min)` in the denominator without checking if `max` could equal `min` (e.g., on a bar with no volume). More importantly, it calls functions like `htfProfile.totalVol.max()` and subsequently `htfProfile.totalVol.indexof()` without first verifying that the array is not empty or contains valid numbers. If `max()` returns `na`, `indexof(na)` will also be `na`, and passing this to `array.get()` will trigger a fatal runtime error. This makes the script fragile and prone to failure in certain market conditions.
 
 ### 4. Readability & Maintainability
 
-The code's readability is high at the architectural level but low at the function level.
+The script is a mixed bag, combining excellent high-level structure with poor low-level function design.
 
-*   **Naming Conventions:** Variable and function names (`htfProfile`, `pocIndex`, `getHTFvals`) are clear, descriptive, and follow a consistent convention. The UDT names are excellent.
-*   **Documentation:** The input block is very well-organized with `group` and `inline` parameters, creating a clean and user-friendly interface. However, the code itself lacks inline comments. Complex sections, like the Value Area (VA) calculation loop, are difficult to parse without explanatory notes. The "magic number" `15` in the normalization formula is also undocumented.
-*   **Monolithic Function:** The primary weakness is the `getHTFvals` function. It is a monolithic block of over 150 lines that handles data fetching, state management, profile calculation, normalization, and drawing. This violates the Single Responsibility Principle and makes the function extremely difficult to debug, modify, or maintain. Breaking it down into smaller, specialized functions (e.g., `calculateProfile`, `drawProfileShapes`, `calculateValueArea`) would dramatically improve its long-term maintainability.
+*   **Naming Conventions:** Variable names are mostly clear, but some are overly abbreviated (e.g., `htfO`, `htfH`, `htfT` instead of `htfOpen`, `htfHigh`, `htfTime`). The UDT and method names are excellent.
+*   **Documentation:** The code is severely under-commented. Complex sections, like the normalization logic or the Value Area calculation, lack any explanation. The "magic number" `15` in the normalization formula is undocumented, making it impossible for another developer to understand its purpose without extensive reverse-engineering.
+*   **Code Structure:** The `getHTFvals` function is a monolithic block of over 150 lines responsible for data fetching, state management, calculation, and drawing. This violates the Single Responsibility Principle and makes the code extremely difficult to read, debug, and maintain. This function should have been refactored into smaller, specialized functions (e.g., `calculateProfileFromData`, `drawProfileObjects`, `calculateValueArea`).
 
 ---
 
 ### Audit Verdict
 
-**Code Quality Grade: B+**
+**Code Quality Grade: C+**
 
-This script is a powerful and technically sophisticated tool that showcases a masterful command of modern Pine Script v5 features. Its object-oriented architecture is a significant achievement. However, it is held back from a top grade by critical performance inefficiencies and a monolithic function structure that compromises maintainability.
+This script is a powerful and ambitious tool that showcases an expert-level grasp of modern Pine Script features like UDTs and methods. However, it is ultimately undermined by significant architectural inefficiencies, a critical lack of error handling, and poor internal code structure, which severely impact its performance, reliability, and maintainability.
 
-*   **Greatest Technical Achievement:** The script's greatest achievement is its **sophisticated object-oriented architecture using User-Defined Types (UDTs) and Methods**. The `profile` UDT is a perfect example of how to model complex data structures in Pine Script, leading to cleaner and more intuitive code. This represents a high level of language proficiency.
+*   **Greatest Technical Achievement:** The script's use of **User-Defined Types (UDTs) and Methods** to create an object-oriented structure is its most impressive feature. This organizes the complex state of a volume profile into a clean, logical entity, representing a sophisticated application of modern Pine Script.
 
-*   **Most Significant Technical Debt:** The most significant technical debt is the **monolithic `getHTFvals` function combined with its inefficient data processing**. The function's massive size and multiple responsibilities make it difficult to maintain. This is compounded by the performance hit from redundant loops and multiple calls to `request.security_lower_tf`, which will cause noticeable script lag for users on active charts.
+*   **Most Significant Technical Debt:** The script's primary failing is its **brittle, monolithic architecture**. The combination of multiple heavy `request.security_lower_tf` calls, redundant calculation loops, and a complete lack of `na`/runtime error checking makes the script both slow and unreliable. The massive `getHTFvals` function is a prime example of code that is difficult to maintain and debug.
     
