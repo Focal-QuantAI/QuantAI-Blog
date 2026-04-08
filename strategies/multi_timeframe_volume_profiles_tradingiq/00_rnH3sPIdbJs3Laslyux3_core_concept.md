@@ -1,0 +1,16 @@
+
+# Core Concept
+
+### 1. The Market Philosophy
+This script's investment thesis is rooted in **Auction Market Theory**, which posits that markets are continuous two-way auctions seeking to facilitate trade and establish value. The strategy aims to exploit the predictable patterns that emerge from this process. It operates on a hybrid model of **Mean Reversion** and **Breakout** analysis. The core principle is that price gravitates towards areas of high transactional volume (High Volume Nodes, HVNs), representing accepted "fair value," and accelerates through areas of low volume (Low Volume Nodes, LVNs), representing "unfair value." By identifying the Point of Control (POC) and Value Area (VA), the script maps the market's perception of value, anticipating either a reversion to the mean (the POC) or a sharp directional move away from it.
+
+### 2. The Trade Narrative
+The script is designed to identify a "story" of multi-timeframe confluence. The ideal setup occurs when price action on a lower timeframe approaches a significant structural level—such as a Value Area High (VAH) or Low (VAL)—that is validated by a similar level on a higher timeframe. For example, a trader using this tool would look for a scenario where price is testing the 30-minute VAH, which also happens to be the lower boundary of a 4-hour Low Volume Node. This narrative suggests that a successful breakout above the 30-minute resistance has a high probability of accelerating upwards, as the higher timeframe context shows a historical lack of supply to impede the move. The script provides the map; the trader looks for the "you are here" pin to align with a structural opportunity.
+
+### 3. Trigger Logic & Mechanics
+The script's engine constructs high-fidelity volume profiles by requesting granular, lower-timeframe data (e.g., 1-minute volume) to build a precise picture for a higher timeframe (e.g., 60-minute). This technique provides a far superior signal-to-noise ratio compared to using the HTF's native volume data.
+
+*   **Confluence as a Filter:** The primary mechanic is the simultaneous display of up to five distinct timeframe profiles. This isn't about using different indicators in tandem; it's about using the *same* indicator across different fractal views of the market. A setup on a 15-minute profile is validated or invalidated by its position relative to the daily profile, serving as a powerful macro filter.
+*   **Delta Profile:** The optional "Delta Profile" model enhances this analysis by dissecting total volume into buying and selling pressure. This serves as a conviction filter, revealing whether a high-volume level was formed by aggressive participants or passive absorption.
+*   **Catalyst:** The script itself does not execute. It flips from "observing" to "informing execution" when price action confirms a hypothesis at a key visualized level (e.g., a rejection candlestick pattern at a multi-timeframe POC), providing the discretionary trader with a data-driven catalyst for action.
+    
