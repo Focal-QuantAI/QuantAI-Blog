@@ -1,0 +1,537 @@
+// ═══════════════════════════════════════════════════════════════════════════════
+// SMART LEVELS PRO  v2.0
+// Labels on the price scale — clean, right edge, never on the chart
+// ═══════════════════════════════════════════════════════════════════════════════
+
+//@version=6
+indicator("Smart Levels Pro", overlay=true, max_lines_count=50, max_labels_count=50)
+
+// ─── INPUTS ──────────────────────────────────────────────────────────────────
+
+grp_d    = "Previous Day"
+show_pd  = input.bool(true,  "Show Previous Day",  group=grp_d)
+col_pdh  = input.color(#2196F3, "PDH Colour",       group=grp_d)
+col_pdl  = input.color(#64B5F6, "PDL Colour",       group=grp_d)
+style_pd = input.string("Dashed", "Line Style", options=["Solid","Dashed","Dotted"], group=grp_d)
+width_pd = input.int(1, "Width", minval=1, maxval=4, group=grp_d)
+
+grp_w    = "Previous Week"
+show_pw  = input.bool(true,  "Show Previous Week", group=grp_w)
+col_pwh  = input.color(#FF9800, "PWH Colour",       group=grp_w)
+col_pwl  = input.color(#FFB74D, "PWL Colour",       group=grp_w)
+style_pw = input.string("Dashed", "Line Style", options=["Solid","Dashed","Dotted"], group=grp_w)
+width_pw = input.int(1, "Width", minval=1, maxval=4, group=grp_w)
+
+grp_m    = "Previous Month"
+show_pm  = input.bool(true,  "Show Previous Month",group=grp_m)
+col_pmh  = input.color(#E91E63, "PMH Colour",       group=grp_m)
+col_pml  = input.color(#F48FB1, "PML Colour",       group=grp_m)
+style_pm = input.string("Dashed", "Line Style", options=["Solid","Dashed","Dotted"], group=grp_m)
+width_pm = input.int(1, "Width", minval=1, maxval=4, group=grp_m)
+
+extend_bars = input.int(24, "Extend lines (bars right)", minval=1, maxval=500, tooltip="How many bars the lines extend past the current bar")
+
+grp_eq   = "Equilibrium Lines"
+show_eq  = input.bool(false, "Show Equilibrium Lines",    group=grp_eq, tooltip="Midpoint between PDH/PDL, PWH/PWL and PMH/PML")
+show_eq_d = input.bool(true, "Daily Equilibrium",         group=grp_eq)
+show_eq_w = input.bool(true, "Weekly Equilibrium",        group=grp_eq)
+show_eq_m = input.bool(true, "Monthly Equilibrium",       group=grp_eq)
+col_eq    = input.color(color.new(#FFFFFF, 70), "Colour", group=grp_eq)
+
+grp_sess        = "Session Ranges"
+show_sydney     = input.bool(true,   "Show Sydney",         group=grp_sess)
+col_sydney      = input.color(#FF9800, "Sydney Colour",     group=grp_sess)
+show_asia       = input.bool(true,   "Show Tokyo",          group=grp_sess)
+col_asia        = input.color(#9C27B0, "Tokyo Colour",      group=grp_sess)
+show_london     = input.bool(true,   "Show London",         group=grp_sess)
+col_london      = input.color(#00BCD4, "London Colour",     group=grp_sess)
+show_ny         = input.bool(true,   "Show New York",       group=grp_sess)
+col_ny          = input.color(#F23645, "NY Colour",         group=grp_sess)
+sess_width      = input.int(1, "Session Line Width", minval=1, maxval=4, group=grp_sess)
+
+grp_style       = "Session Style"
+bull_col        = input.color(#089981, "Bullish Gradient",  group=grp_style)
+bear_col        = input.color(#F23645, "Bearish Gradient",  group=grp_style)
+transp          = input.int(80,  "Transparency",            group=grp_style, minval=0, maxval=95)
+grad_type       = input.string("Vertical", "Gradient Direction", group=grp_style, options=["Horizontal","Vertical"])
+
+// ─── TRACK LEVELS ────────────────────────────────────────────────────────────
+// Forex day boundary = 22:00 GMT (NY close / new trading day open)
+// Week boundary = Monday 22:00 GMT (after Friday close)
+
+gmtH_lvl   = hour(time, "GMT+0")
+// New day fires once when hour changes TO 22
+is_new_day   = gmtH_lvl == 22 and hour(time[1], "GMT+0") != 22
+is_new_week  = weekofyear != weekofyear[1] or (year != year[1] and weekofyear < weekofyear[1])
+is_new_month = month != month[1] or year != year[1]
+
+// Daily
+var float pd_high = na
+var float pd_low  = na
+var int   pd_high_bar = na
+var int   pd_low_bar  = na
+var float d_high  = na
+var float d_low   = na
+var int   d_high_bar = na
+var int   d_low_bar  = na
+
+if is_new_day
+    pd_high     := d_high
+    pd_low      := d_low
+    pd_high_bar := d_high_bar
+    pd_low_bar  := d_low_bar
+    d_high      := high
+    d_low       := low
+    d_high_bar  := bar_index
+    d_low_bar   := bar_index
+else
+    if high >= nz(d_high, high)
+        d_high    := high
+        d_high_bar := bar_index
+    if low <= nz(d_low, low)
+        d_low    := low
+        d_low_bar := bar_index
+
+// Weekly
+var float pw_high = na
+var float pw_low  = na
+var int   pw_high_bar = na
+var int   pw_low_bar  = na
+var float w_high  = na
+var float w_low   = na
+var int   w_high_bar = na
+var int   w_low_bar  = na
+
+if is_new_week
+    pw_high     := w_high
+    pw_low      := w_low
+    pw_high_bar := w_high_bar
+    pw_low_bar  := w_low_bar
+    w_high      := high
+    w_low       := low
+    w_high_bar  := bar_index
+    w_low_bar   := bar_index
+else
+    if high >= nz(w_high, high)
+        w_high    := high
+        w_high_bar := bar_index
+    if low <= nz(w_low, low)
+        w_low    := low
+        w_low_bar := bar_index
+
+// Monthly
+var float pm_high = na
+var float pm_low  = na
+var int   pm_high_bar  = na
+var int   pm_low_bar   = na
+var int   pm_high_time = na
+var int   pm_low_time  = na
+var float mo_high = na
+var float mo_low  = na
+var int   mo_high_bar  = na
+var int   mo_low_bar   = na
+var int   mo_high_time = na
+var int   mo_low_time  = na
+
+if is_new_month
+    pm_high      := mo_high
+    pm_low       := mo_low
+    pm_high_bar  := mo_high_bar
+    pm_low_bar   := mo_low_bar
+    pm_high_time := mo_high_time
+    pm_low_time  := mo_low_time
+    mo_high      := high
+    mo_low       := low
+    mo_high_bar  := bar_index
+    mo_low_bar   := bar_index
+    mo_high_time := time
+    mo_low_time  := time
+else
+    if high >= nz(mo_high, high)
+        mo_high      := high
+        mo_high_bar  := bar_index
+        mo_high_time := time
+    if low <= nz(mo_low, low)
+        mo_low      := low
+        mo_low_bar  := bar_index
+        mo_low_time := time
+
+// ─── SESSION RANGE TRACKING ──────────────────────────────────────────────────
+// Correct professional forex session times (GMT standard):
+//   Sydney   21:00 – 06:00
+//   Tokyo    23:00 – 08:00
+//   London   07:00 – 16:00
+//   New York 12:00 – 21:00
+// Sessions overlap naturally — no artificial separation, no gaps
+
+gmtT = hour(time, "GMT+0") * 100 + minute(time, "GMT+0")
+
+inSydney = gmtT >= 2100 or  gmtT < 600
+inTokyo  = gmtT >= 2300 or  gmtT < 800
+inLdn    = gmtT >= 700  and gmtT < 1600
+inNY     = gmtT >= 1200 and gmtT < 2100
+
+// Dashboard — dominant session label
+currentSession = (gmtT >= 1200 and gmtT < 1600) ? "LDN / NY"  :
+                 (gmtT >= 700  and gmtT < 1200)  ? "London"    :
+                 (gmtT >= 1600 and gmtT < 2100)  ? "New York"  :
+                 (gmtT >= 2300 or  gmtT < 600)   ? "Tokyo"     :
+                 (gmtT >= 2100 or  gmtT < 700)   ? "Sydney"    : "Closed"
+sessionCol     = (gmtT >= 1200 and gmtT < 1600) ? color.new(#FFEB3B,0) :
+                 inLdn    ? col_london :
+                 inNY     ? col_ny     :
+                 inTokyo  ? col_asia   :
+                 inSydney ? col_sydney : color.rgb(150,150,150)
+
+// ── Track each session high/low + timestamps ──────────────────────────────────
+
+sydNewBar   = inSydney and not inSydney[1]
+tokyoNewBar = inTokyo  and not inTokyo[1]
+ldnNewBar   = inLdn    and not inLdn[1]
+nyNewBar    = inNY     and not inNY[1]
+
+var float syd_h   = na, var float syd_l   = na, var int syd_ts   = na, var int syd_te   = na
+var float tok_h   = na, var float tok_l   = na, var int tok_ts   = na, var int tok_te   = na
+var float ldn_h   = na, var float ldn_l   = na, var int ldn_ts   = na, var int ldn_te   = na
+var float ny_h    = na, var float ny_l    = na, var int ny_ts    = na, var int ny_te    = na
+
+if sydNewBar
+    syd_h := high, syd_l := low, syd_ts := time, syd_te := na
+else if inSydney
+    syd_h := math.max(nz(syd_h,high),high), syd_l := math.min(nz(syd_l,low),low), syd_te := time_close
+else if not inSydney and inSydney[1]
+    syd_te := time
+
+if tokyoNewBar
+    tok_h := high, tok_l := low, tok_ts := time, tok_te := na
+else if inTokyo
+    tok_h := math.max(nz(tok_h,high),high), tok_l := math.min(nz(tok_l,low),low), tok_te := time_close
+else if not inTokyo and inTokyo[1]
+    tok_te := time
+
+if ldnNewBar
+    ldn_h := high, ldn_l := low, ldn_ts := time, ldn_te := na
+else if inLdn
+    ldn_h := math.max(nz(ldn_h,high),high), ldn_l := math.min(nz(ldn_l,low),low), ldn_te := time_close
+else if not inLdn and inLdn[1]
+    ldn_te := time
+
+if nyNewBar
+    ny_h := high, ny_l := low, ny_ts := time, ny_te := na
+else if inNY
+    ny_h := math.max(nz(ny_h,high),high), ny_l := math.min(nz(ny_l,low),low), ny_te := time_close
+else if not inNY and inNY[1]
+    ny_te := time
+
+// ── Gradient fill — plot/fill, na outside session = no bleed ─────────────────
+
+pip = syminfo.mintick * 4
+
+// Gradient fill only shows for the past 35 days — older sessions show lines only
+cutoff_time   = timenow - 35 * 24 * 60 * 60 * 1000
+in_fill_range = time >= cutoff_time
+
+syd_top  = show_sydney and inSydney and in_fill_range ? syd_h : na
+syd_bot  = show_sydney and inSydney and in_fill_range ? syd_l : na
+tok_top  = show_asia   and inTokyo  and in_fill_range ? tok_h : na
+tok_bot  = show_asia   and inTokyo  and in_fill_range ? tok_l : na
+ldn_top  = show_london and inLdn    and in_fill_range ? ldn_h : na
+ldn_bot  = show_london and inLdn    and in_fill_range ? ldn_l : na
+ny_top   = show_ny     and inNY     and in_fill_range ? ny_h  : na
+ny_bot   = show_ny     and inNY     and in_fill_range ? ny_l  : na
+
+pSydT  = plot(syd_top, "Syd Top",  color.new(color.black,100), style=plot.style_linebr)
+pSydB  = plot(syd_bot, "Syd Bot",  color.new(color.black,100), style=plot.style_linebr)
+pTokT  = plot(tok_top, "Tok Top",  color.new(color.black,100), style=plot.style_linebr)
+pTokB  = plot(tok_bot, "Tok Bot",  color.new(color.black,100), style=plot.style_linebr)
+pLdnT  = plot(ldn_top, "Ldn Top",  color.new(color.black,100), style=plot.style_linebr)
+pLdnB  = plot(ldn_bot, "Ldn Bot",  color.new(color.black,100), style=plot.style_linebr)
+pNYT   = plot(ny_top,  "NY Top",   color.new(color.black,100), style=plot.style_linebr)
+pNYB   = plot(ny_bot,  "NY Bot",   color.new(color.black,100), style=plot.style_linebr)
+
+tc     = color.new(bull_col, transp)
+bc     = color.new(bear_col, transp)
+delta  = close - open
+smooth = ta.sma(math.sign(delta), 5)
+hc     = color.from_gradient(smooth, -1, 1, color.new(bear_col,transp), color.new(bull_col,transp))
+isVert = grad_type == "Vertical"
+
+fill(pSydT, pSydB, syd_h, syd_l, isVert ? tc : hc, isVert ? bc : hc)
+fill(pTokT, pTokB, tok_h, tok_l, isVert ? tc : hc, isVert ? bc : hc)
+fill(pLdnT, pLdnB, ldn_h, ldn_l, isVert ? tc : hc, isVert ? bc : hc)
+fill(pNYT,  pNYB,  ny_h,  ny_l,  isVert ? tc : hc, isVert ? bc : hc)
+
+// ── Border lines + labels using xloc.bar_time ────────────────────────────────
+
+var line  ln_syd_h  = na, var line  ln_syd_l  = na
+var line  ln_tok_h  = na, var line  ln_tok_l  = na
+var line  ln_ldn_h  = na, var line  ln_ldn_l  = na
+var line  ln_ny_h   = na, var line  ln_ny_l   = na
+var label lb_syd_h  = na, var label lb_syd_l  = na
+var label lb_tok_h  = na, var label lb_tok_l  = na
+var label lb_ldn_h  = na, var label lb_ldn_l  = na
+var label lb_ny_h   = na, var label lb_ny_l   = na
+
+f_te(te) => na(te) ? time_close : te
+
+// Draw all session border lines + labels — inlined (Pine v6: no mutable args in functions)
+if show_sydney and not na(syd_h) and not na(syd_ts)
+    syd_end_est = na(syd_te) ? syd_ts + 9 * 60 * 60 * 1000 : syd_te
+    cx = math.round((syd_ts + syd_end_est) / 2)
+    te_line = na(syd_te) ? time_close : syd_te
+    line.delete(ln_syd_h),  line.delete(ln_syd_l)
+    label.delete(lb_syd_h), label.delete(lb_syd_l)
+    ln_syd_h := line.new(syd_ts, syd_h, te_line, syd_h, xloc=xloc.bar_time, color=col_sydney, width=sess_width+1)
+    ln_syd_l := line.new(syd_ts, syd_l, te_line, syd_l, xloc=xloc.bar_time, color=col_sydney, width=sess_width+1)
+    lb_syd_h := label.new(cx, syd_h, "Sydney High  " + str.tostring(syd_h, format.mintick), xloc=xloc.bar_time, color=color.new(color.black,100), textcolor=col_sydney, style=label.style_label_down, size=size.small)
+    lb_syd_l := label.new(cx, syd_l, "Sydney Low  " + str.tostring(syd_l, format.mintick), xloc=xloc.bar_time, color=color.new(color.black,100), textcolor=col_sydney, style=label.style_label_up, size=size.small)
+
+if show_asia and not na(tok_h) and not na(tok_ts)
+    tok_end_est = na(tok_te) ? tok_ts + 9 * 60 * 60 * 1000 : tok_te
+    cx = math.round((tok_ts + tok_end_est) / 2)
+    te_line = na(tok_te) ? time_close : tok_te
+    line.delete(ln_tok_h),  line.delete(ln_tok_l)
+    label.delete(lb_tok_h), label.delete(lb_tok_l)
+    ln_tok_h := line.new(tok_ts, tok_h, te_line, tok_h, xloc=xloc.bar_time, color=col_asia, width=sess_width+1)
+    ln_tok_l := line.new(tok_ts, tok_l, te_line, tok_l, xloc=xloc.bar_time, color=col_asia, width=sess_width+1)
+    lb_tok_h := label.new(cx, tok_h, "Tokyo High  " + str.tostring(tok_h, format.mintick), xloc=xloc.bar_time, color=color.new(color.black,100), textcolor=col_asia, style=label.style_label_down, size=size.small)
+    lb_tok_l := label.new(cx, tok_l, "Tokyo Low  " + str.tostring(tok_l, format.mintick), xloc=xloc.bar_time, color=color.new(color.black,100), textcolor=col_asia, style=label.style_label_up, size=size.small)
+
+if show_london and not na(ldn_h) and not na(ldn_ts)
+    ldn_end_est = na(ldn_te) ? ldn_ts + 9 * 60 * 60 * 1000 : ldn_te
+    cx = math.round((ldn_ts + ldn_end_est) / 2)
+    te_line = na(ldn_te) ? time_close : ldn_te
+    line.delete(ln_ldn_h),  line.delete(ln_ldn_l)
+    label.delete(lb_ldn_h), label.delete(lb_ldn_l)
+    ln_ldn_h := line.new(ldn_ts, ldn_h, te_line, ldn_h, xloc=xloc.bar_time, color=col_london, width=sess_width+1)
+    ln_ldn_l := line.new(ldn_ts, ldn_l, te_line, ldn_l, xloc=xloc.bar_time, color=col_london, width=sess_width+1)
+    lb_ldn_h := label.new(cx, ldn_h, "London High  " + str.tostring(ldn_h, format.mintick), xloc=xloc.bar_time, color=color.new(color.black,100), textcolor=col_london, style=label.style_label_down, size=size.small)
+    lb_ldn_l := label.new(cx, ldn_l, "London Low  " + str.tostring(ldn_l, format.mintick), xloc=xloc.bar_time, color=color.new(color.black,100), textcolor=col_london, style=label.style_label_up, size=size.small)
+
+if show_ny and not na(ny_h) and not na(ny_ts)
+    ny_end_est = ny_ts + 9 * 60 * 60 * 1000
+    cx = math.round((ny_ts + ny_end_est) / 2)
+    te_line = na(ny_te) ? time_close : ny_te
+    line.delete(ln_ny_h),  line.delete(ln_ny_l)
+    label.delete(lb_ny_h), label.delete(lb_ny_l)
+    ln_ny_h := line.new(ny_ts, ny_h, te_line, ny_h, xloc=xloc.bar_time, color=col_ny, width=sess_width+1)
+    ln_ny_l := line.new(ny_ts, ny_l, te_line, ny_l, xloc=xloc.bar_time, color=col_ny, width=sess_width+1)
+    lb_ny_h := label.new(cx, ny_h, "New York High  " + str.tostring(ny_h, format.mintick), xloc=xloc.bar_time, color=color.new(color.black,100), textcolor=col_ny, style=label.style_label_down, size=size.small)
+    lb_ny_l := label.new(cx, ny_l, "New York Low  "  + str.tostring(ny_l, format.mintick), xloc=xloc.bar_time, color=color.new(color.black,100), textcolor=col_ny, style=label.style_label_up,   size=size.small)
+
+// ─── PREVIOUS LEVELS — LINES & LABELS ────────────────────────────────────────
+var line ln_pdh = na
+var line ln_pdl = na
+var line ln_pwh = na
+var line ln_pwl = na
+var line ln_pmh = na
+var line ln_pml = na
+var label lb_pdh = na
+var label lb_pdl = na
+var label lb_pwh = na
+var label lb_pwl = na
+var label lb_pmh = na
+var label lb_pml = na
+var line ln_eq_d = na
+var line ln_eq_w = na
+var line ln_eq_m = na
+
+f_style(s) =>
+    s == "Solid" ? line.style_solid : s == "Dotted" ? line.style_dotted : line.style_dashed
+
+if barstate.islast
+    line.delete(ln_pdh),  line.delete(ln_pdl)
+    line.delete(ln_pwh),  line.delete(ln_pwl)
+    line.delete(ln_pmh),  line.delete(ln_pml)
+    label.delete(lb_pdh), label.delete(lb_pdl)
+    label.delete(lb_pwh), label.delete(lb_pwl)
+    label.delete(lb_pmh), label.delete(lb_pml)
+    line.delete(ln_eq_d), line.delete(ln_eq_w), line.delete(ln_eq_m)
+
+    lx = bar_index + extend_bars
+    // Clamp start bars — max_bars_back default is 500, stay well within it
+    safe_bar = math.max(bar_index - 490, 0)
+
+    if show_pd and not na(pd_high)
+        ln_pdh := line.new(math.max(safe_bar, pd_high_bar), pd_high, lx, pd_high, color=col_pdh, width=width_pd, style=f_style(style_pd))
+        ln_pdl := line.new(math.max(safe_bar, pd_low_bar),  pd_low,  lx, pd_low,  color=col_pdl, width=width_pd, style=f_style(style_pd))
+        lb_pdh := label.new(lx, pd_high + pip, "PDH " + str.tostring(pd_high, format.mintick),
+             color=color.new(color.black, 100), textcolor=col_pdh,
+             style=label.style_label_left, size=size.small)
+        lb_pdl := label.new(lx, pd_low  + pip, "PDL " + str.tostring(pd_low,  format.mintick),
+             color=color.new(color.black, 100), textcolor=col_pdl,
+             style=label.style_label_left, size=size.small)
+
+    if show_pw and not na(pw_high)
+        ln_pwh := line.new(math.max(safe_bar, pw_high_bar), pw_high, lx, pw_high, color=col_pwh, width=width_pw, style=f_style(style_pw))
+        ln_pwl := line.new(math.max(safe_bar, pw_low_bar),  pw_low,  lx, pw_low,  color=col_pwl, width=width_pw, style=f_style(style_pw))
+        lb_pwh := label.new(lx, pw_high + pip, "PWH " + str.tostring(pw_high, format.mintick),
+             color=color.new(color.black, 100), textcolor=col_pwh,
+             style=label.style_label_left, size=size.small)
+        lb_pwl := label.new(lx, pw_low  + pip, "PWL " + str.tostring(pw_low,  format.mintick),
+             color=color.new(color.black, 100), textcolor=col_pwl,
+             style=label.style_label_left, size=size.small)
+
+    if show_pm and not na(pm_high)
+        ln_pmh := line.new(math.max(safe_bar, pm_high_bar), pm_high, lx, pm_high, color=col_pmh, width=width_pm, style=f_style(style_pm))
+        ln_pml := line.new(math.max(safe_bar, pm_low_bar),  pm_low,  lx, pm_low,  color=col_pml, width=width_pm, style=f_style(style_pm))
+        lb_pmh := label.new(lx, pm_high + pip, "PMH " + str.tostring(pm_high, format.mintick),
+             color=color.new(color.black, 100), textcolor=col_pmh,
+             style=label.style_label_left, size=size.small)
+        lb_pml := label.new(lx, pm_low  + pip, "PML " + str.tostring(pm_low,  format.mintick),
+             color=color.new(color.black, 100), textcolor=col_pml,
+             style=label.style_label_left, size=size.small)
+
+    // ── Equilibrium lines — midpoint between H and L for each timeframe ───────
+    if show_eq
+        if show_eq_d and not na(pd_high) and not na(pd_low)
+            eq_d = (pd_high + pd_low) / 2
+            ln_eq_d := line.new(math.max(safe_bar, pd_low_bar), eq_d, lx, eq_d,
+                 color=col_eq, width=1, style=line.style_dotted)
+            label.new(lx, eq_d, "PDH/PDL 50%  " + str.tostring(eq_d, format.mintick),
+                 color=color.new(color.black,100), textcolor=col_eq,
+                 style=label.style_label_left, size=size.small)
+        if show_eq_w and not na(pw_high) and not na(pw_low)
+            eq_w = (pw_high + pw_low) / 2
+            ln_eq_w := line.new(math.max(safe_bar, pw_low_bar), eq_w, lx, eq_w,
+                 color=col_eq, width=1, style=line.style_dotted)
+            label.new(lx, eq_w, "PWH/PWL 50%  " + str.tostring(eq_w, format.mintick),
+                 color=color.new(color.black,100), textcolor=col_eq,
+                 style=label.style_label_left, size=size.small)
+        if show_eq_m and not na(pm_high) and not na(pm_low)
+            eq_m = (pm_high + pm_low) / 2
+            ln_eq_m := line.new(math.max(safe_bar, pm_low_bar), eq_m, lx, eq_m,
+                 color=col_eq, width=1, style=line.style_dotted)
+            label.new(lx, eq_m, "PMH/PML 50%  " + str.tostring(eq_m, format.mintick),
+                 color=color.new(color.black,100), textcolor=col_eq,
+                 style=label.style_label_left, size=size.small)
+
+// price scale markers
+plot(show_pd ? pd_high : na, "PDH", color=col_pdh, linewidth=1, display=display.price_scale)
+plot(show_pd ? pd_low  : na, "PDL", color=col_pdl, linewidth=1, display=display.price_scale)
+plot(show_pw ? pw_high : na, "PWH", color=col_pwh, linewidth=1, display=display.price_scale)
+plot(show_pw ? pw_low  : na, "PWL", color=col_pwl, linewidth=1, display=display.price_scale)
+plot(show_pm ? pm_high : na, "PMH", color=col_pmh, linewidth=1, display=display.price_scale)
+plot(show_pm ? pm_low  : na, "PML", color=col_pml, linewidth=1, display=display.price_scale)
+
+// ─── DASHBOARD SETTINGS ──────────────────────────────────────────────────────
+
+grp_dash     = "Dashboard"
+showDash     = input.bool(true, "Show Dashboard", group=grp_dash)
+tablePosStr  = input.string("Bottom Right", "Position", options=["Top Left","Top Right","Bottom Left","Bottom Right"], group=grp_dash)
+dashSizeStr  = input.string("Small", "Text Size", options=["Tiny","Small","Normal"], group=grp_dash)
+themeStr     = input.string("UK Algorithms", "Colour Theme", options=["UK Algorithms","Midnight","Stealth","Blood Red","Matrix","Arctic","Neon Orange","Royal Blue","Forest","Monochrome"], group=grp_dash)
+
+// ─── THEME ENGINE (identical to Multi TF Dashboard) ──────────────────────────
+
+cBg_P     = color.rgb(8,   0,   15),  cPanel_P  = color.rgb(15,  0,   32),  cHeader_P = color.rgb(22,  0,   48),  cBrand_P  = color.rgb(28,  0,   58),  cFrame_P  = color.rgb(204, 0,  255)
+cBg_M     = color.rgb(5,   5,    8),  cPanel_M  = color.rgb(10,  10,  14),  cHeader_M = color.rgb(15,  15,  22),  cBrand_M  = color.rgb(18,  18,  28),  cFrame_M  = color.rgb(0,   210, 255)
+cBg_S     = color.rgb(18,  18,  18),  cPanel_S  = color.rgb(26,  26,  26),  cHeader_S = color.rgb(34,  34,  34),  cBrand_S  = color.rgb(40,  40,  40),  cFrame_S  = color.rgb(200, 160, 40)
+cBg_R     = color.rgb(10,  0,   0),   cPanel_R  = color.rgb(20,  0,   0),   cHeader_R = color.rgb(32,  0,   0),   cBrand_R  = color.rgb(42,  0,   0),   cFrame_R  = color.rgb(220, 0,   0)
+cBg_X     = color.rgb(0,   5,   0),   cPanel_X  = color.rgb(0,   10,  0),   cHeader_X = color.rgb(0,   18,  0),   cBrand_X  = color.rgb(0,   24,  0),   cFrame_X  = color.rgb(0,   255, 70)
+cBg_A     = color.rgb(5,   10,  18),  cPanel_A  = color.rgb(8,   16,  28),  cHeader_A = color.rgb(12,  22,  40),  cBrand_A  = color.rgb(15,  28,  50),  cFrame_A  = color.rgb(140, 210, 255)
+cBg_O     = color.rgb(12,  6,   0),   cPanel_O  = color.rgb(22,  10,  0),   cHeader_O = color.rgb(32,  14,  0),   cBrand_O  = color.rgb(40,  18,  0),   cFrame_O  = color.rgb(255, 120, 0)
+cBg_B     = color.rgb(4,   6,   18),  cPanel_B  = color.rgb(6,   10,  30),  cHeader_B = color.rgb(8,   14,  44),  cBrand_B  = color.rgb(10,  18,  56),  cFrame_B  = color.rgb(40,  120, 255)
+cBg_F     = color.rgb(4,   12,  4),   cPanel_F  = color.rgb(6,   20,  6),   cHeader_F = color.rgb(8,   28,  8),   cBrand_F  = color.rgb(10,  36,  10),  cFrame_F  = color.rgb(100, 255, 50)
+cBg_Mo    = color.rgb(8,   8,   8),   cPanel_Mo = color.rgb(16,  16,  16),  cHeader_Mo= color.rgb(26,  26,  26),  cBrand_Mo = color.rgb(34,  34,  34),  cFrame_Mo = color.rgb(220, 220, 220)
+
+t = themeStr
+cBg     = t=="Midnight"?cBg_M    :t=="Stealth"?cBg_S    :t=="Blood Red"?cBg_R    :t=="Matrix"?cBg_X    :t=="Arctic"?cBg_A    :t=="Neon Orange"?cBg_O    :t=="Royal Blue"?cBg_B    :t=="Forest"?cBg_F    :t=="Monochrome"?cBg_Mo    :cBg_P
+cPanel  = t=="Midnight"?cPanel_M :t=="Stealth"?cPanel_S :t=="Blood Red"?cPanel_R :t=="Matrix"?cPanel_X :t=="Arctic"?cPanel_A :t=="Neon Orange"?cPanel_O :t=="Royal Blue"?cPanel_B :t=="Forest"?cPanel_F :t=="Monochrome"?cPanel_Mo :cPanel_P
+cHeader = t=="Midnight"?cHeader_M:t=="Stealth"?cHeader_S:t=="Blood Red"?cHeader_R:t=="Matrix"?cHeader_X:t=="Arctic"?cHeader_A:t=="Neon Orange"?cHeader_O:t=="Royal Blue"?cHeader_B:t=="Forest"?cHeader_F:t=="Monochrome"?cHeader_Mo:cHeader_P
+cBrand  = t=="Midnight"?cBrand_M :t=="Stealth"?cBrand_S :t=="Blood Red"?cBrand_R :t=="Matrix"?cBrand_X :t=="Arctic"?cBrand_A :t=="Neon Orange"?cBrand_O :t=="Royal Blue"?cBrand_B :t=="Forest"?cBrand_F :t=="Monochrome"?cBrand_Mo :cBrand_P
+cFrame  = t=="Midnight"?cFrame_M :t=="Stealth"?cFrame_S :t=="Blood Red"?cFrame_R :t=="Matrix"?cFrame_X :t=="Arctic"?cFrame_A :t=="Neon Orange"?cFrame_O :t=="Royal Blue"?cFrame_B :t=="Forest"?cFrame_F :t=="Monochrome"?cFrame_Mo :cFrame_P
+
+cText     = color.rgb(235, 235, 235)
+cSub      = color.rgb(150, 150, 160)
+neonGreen = t=="Stealth"?color.rgb(80,200,80):t=="Blood Red"?color.rgb(255,80,80):t=="Matrix"?color.rgb(0,255,70):t=="Monochrome"?color.rgb(200,200,200):t=="Arctic"?color.rgb(140,220,255):t=="Neon Orange"?color.rgb(255,160,40):t=="Royal Blue"?color.rgb(100,180,255):t=="Forest"?color.rgb(100,255,50):color.rgb(0,255,160)
+neonRed   = t=="Stealth"?color.rgb(220,60,60):t=="Matrix"?color.rgb(0,200,50):t=="Monochrome"?color.rgb(120,120,120):t=="Arctic"?color.rgb(80,160,220):t=="Neon Orange"?color.rgb(200,80,0):t=="Royal Blue"?color.rgb(40,80,200):t=="Forest"?color.rgb(50,180,20):color.rgb(255,70,70)
+
+f_dashSize(s) => s == "Tiny" ? size.tiny : s == "Small" ? size.small : size.normal
+dashSize = f_dashSize(dashSizeStr)
+
+tablePos = tablePosStr == "Top Left" ? position.top_left : tablePosStr == "Top Right" ? position.top_right : tablePosStr == "Bottom Left" ? position.bottom_left : position.bottom_right
+
+// ─── TABLE ───────────────────────────────────────────────────────────────────
+
+var table info = na
+var string lastPos = ""
+
+if showDash
+    if lastPos != tablePosStr and not na(info)
+        table.delete(info)
+        info := na
+    if na(info)
+        info := table.new(tablePos, 3, 9,
+             bgcolor      = color.new(cBg, 0),
+             frame_color  = color.new(cFrame, 0),
+             frame_width  = 2,
+             border_color = color.new(cPanel, 0),
+             border_width = 0)
+        lastPos := tablePosStr
+
+// ── helpers — must be global scope, never inside if blocks ───────────────────
+f_dist(lvl)  => not na(lvl) ? str.tostring(math.round(math.abs(close - lvl) / close * 100, 2)) + "%" : "—"
+f_price(lvl) => not na(lvl) ? str.tostring(lvl, format.mintick) : "—"
+
+if showDash and not na(info) and barstate.islast
+
+    // ── Row 0: Title ─────────────────────────────────────────────────────────
+    table.cell(info, 0, 0, "UK ALGORITHMS", text_color=cText, bgcolor=color.new(cBrand, 0), text_size=dashSize, text_halign=text.align_left)
+    table.cell(info, 1, 0, "",                                bgcolor=color.new(cBrand, 0))
+    table.cell(info, 2, 0, "Session: " + currentSession,     text_color=sessionCol, bgcolor=color.new(cBrand, 0), text_size=dashSize, text_halign=text.align_right)
+
+    // ── Row 1: Column headers ─────────────────────────────────────────────────
+    table.cell(info, 0, 1, "Level",  text_color=cText, bgcolor=color.new(cHeader, 0), text_size=dashSize, text_halign=text.align_center)
+    table.cell(info, 1, 1, "Price",  text_color=cText, bgcolor=color.new(cHeader, 0), text_size=dashSize, text_halign=text.align_center)
+    table.cell(info, 2, 1, "Dist %", text_color=cText, bgcolor=color.new(cHeader, 0), text_size=dashSize, text_halign=text.align_center)
+
+    // ── Rows 2-7: Levels ──────────────────────────────────────────────────────
+    panBG = color.new(cPanel, 0)
+
+    table.cell(info, 0, 2, "PDH", text_color=col_pdh, bgcolor=panBG, text_size=dashSize, text_halign=text.align_center)
+    table.cell(info, 1, 2, f_price(pd_high), text_color=cText, bgcolor=panBG, text_size=dashSize, text_halign=text.align_center)
+    table.cell(info, 2, 2, f_dist(pd_high),  text_color=color.new(cSub, 0), bgcolor=panBG, text_size=dashSize, text_halign=text.align_center)
+
+    table.cell(info, 0, 3, "PDL", text_color=col_pdl, bgcolor=panBG, text_size=dashSize, text_halign=text.align_center)
+    table.cell(info, 1, 3, f_price(pd_low),  text_color=cText, bgcolor=panBG, text_size=dashSize, text_halign=text.align_center)
+    table.cell(info, 2, 3, f_dist(pd_low),   text_color=color.new(cSub, 0), bgcolor=panBG, text_size=dashSize, text_halign=text.align_center)
+
+    table.cell(info, 0, 4, "PWH", text_color=col_pwh, bgcolor=panBG, text_size=dashSize, text_halign=text.align_center)
+    table.cell(info, 1, 4, f_price(pw_high), text_color=cText, bgcolor=panBG, text_size=dashSize, text_halign=text.align_center)
+    table.cell(info, 2, 4, f_dist(pw_high),  text_color=color.new(cSub, 0), bgcolor=panBG, text_size=dashSize, text_halign=text.align_center)
+
+    table.cell(info, 0, 5, "PWL", text_color=col_pwl, bgcolor=panBG, text_size=dashSize, text_halign=text.align_center)
+    table.cell(info, 1, 5, f_price(pw_low),  text_color=cText, bgcolor=panBG, text_size=dashSize, text_halign=text.align_center)
+    table.cell(info, 2, 5, f_dist(pw_low),   text_color=color.new(cSub, 0), bgcolor=panBG, text_size=dashSize, text_halign=text.align_center)
+
+    table.cell(info, 0, 6, "PMH", text_color=col_pmh, bgcolor=panBG, text_size=dashSize, text_halign=text.align_center)
+    table.cell(info, 1, 6, f_price(pm_high), text_color=cText, bgcolor=panBG, text_size=dashSize, text_halign=text.align_center)
+    table.cell(info, 2, 6, f_dist(pm_high),  text_color=color.new(cSub, 0), bgcolor=panBG, text_size=dashSize, text_halign=text.align_center)
+
+    table.cell(info, 0, 7, "PML", text_color=col_pml, bgcolor=panBG, text_size=dashSize, text_halign=text.align_center)
+    table.cell(info, 1, 7, f_price(pm_low),  text_color=cText, bgcolor=panBG, text_size=dashSize, text_halign=text.align_center)
+    table.cell(info, 2, 7, f_dist(pm_low),   text_color=color.new(cSub, 0), bgcolor=panBG, text_size=dashSize, text_halign=text.align_center)
+
+    // ── Row 8: Nearest level ──────────────────────────────────────────────────
+    levels      = array.from(pd_high, pd_low, pw_high, pw_low, pm_high, pm_low)
+    levelNames  = array.from("PDH", "PDL", "PWH", "PWL", "PMH", "PML")
+    levelCols   = array.from(col_pdh, col_pdl, col_pwh, col_pwl, col_pmh, col_pml)
+    nearestDist = 999999.0
+    nearestName = "—"
+    nearestCol  = cText
+    for i = 0 to array.size(levels) - 1
+        lvl = array.get(levels, i)
+        if not na(lvl)
+            d = math.abs(close - lvl)
+            if d < nearestDist
+                nearestDist := d
+                nearestName := array.get(levelNames, i)
+                nearestCol  := array.get(levelCols, i)
+    nearestPct = str.tostring(math.round(nearestDist / close * 100, 2)) + "%"
+
+    table.cell(info, 0, 8, "Nearest",    text_color=color.new(cSub, 0), bgcolor=color.new(cBrand, 0), text_size=dashSize, text_halign=text.align_center)
+    table.cell(info, 1, 8, nearestName,  text_color=nearestCol,          bgcolor=color.new(cBrand, 0), text_size=dashSize, text_halign=text.align_center)
+    table.cell(info, 2, 8, nearestPct,   text_color=cText,               bgcolor=color.new(cBrand, 0), text_size=dashSize, text_halign=text.align_center)
+
+// ─── ALERTS — coming soon ────────────────────────────────────────────────────
